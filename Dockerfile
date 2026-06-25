@@ -71,6 +71,7 @@ ENV PIPX_HOME=/opt/pipx \
     PIPX_BIN_DIR=/usr/local/bin
 RUN pip install --no-cache-dir --break-system-packages pipx \
     && pipx install "semgrep==${SEMGREP_VERSION}" \
+    && pipx inject semgrep setuptools \
     && pipx install "ruff==${RUFF_VERSION}" \
     && pipx install "mypy==${MYPY_VERSION}" \
     && pipx install "pytest==${PYTEST_VERSION}" \
