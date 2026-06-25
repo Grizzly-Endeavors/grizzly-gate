@@ -71,11 +71,12 @@ ENV PIPX_HOME=/opt/pipx \
     PIPX_BIN_DIR=/usr/local/bin
 RUN pip install --no-cache-dir --break-system-packages pipx \
     && pipx install "semgrep==${SEMGREP_VERSION}" \
-    && pipx inject semgrep setuptools \
+    && pipx inject semgrep "setuptools<81" \
     && pipx install "ruff==${RUFF_VERSION}" \
     && pipx install "mypy==${MYPY_VERSION}" \
     && pipx install "pytest==${PYTEST_VERSION}" \
     && pipx install "ansible-lint==${ANSIBLE_LINT_VERSION}" \
+    && pipx inject ansible-lint "ansible-core<2.19" \
     && pipx install "yamllint==${YAMLLINT_VERSION}"
 
 # cosign, trivy, gitleaks (prebuilt binaries, pinned).
