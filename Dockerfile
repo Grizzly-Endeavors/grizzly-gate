@@ -6,7 +6,9 @@
 # image digest with cosign. Update the gate = bump the pins here + the tag.
 
 # ── Stage 1: build the harness ──────────────────────────────────────────────
-FROM rust:1.83-slim-bookworm AS harness
+# Rust 1.85+ required: a transitive dep (clap) needs edition2024 cargo support,
+# stabilized in 1.85.
+FROM rust:1.85-slim-bookworm AS harness
 WORKDIR /build
 COPY harness ./harness
 COPY gate.toml ./gate.toml
@@ -17,7 +19,7 @@ RUN cargo build --release --manifest-path harness/Cargo.toml \
 FROM debian:bookworm-slim
 
 # Pinned tool versions — bump deliberately, never float.
-ARG RUST_VERSION=1.83.0
+ARG RUST_VERSION=1.85.0
 ARG CARGO_DENY_VERSION=0.16.3
 ARG COSIGN_VERSION=2.4.1
 ARG TRIVY_VERSION=0.58.1
