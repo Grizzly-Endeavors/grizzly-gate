@@ -1,9 +1,9 @@
 # grizzly-gate — the grizzly-platform CI gate image.
 #
 # One versioned artifact: the Rust orchestration harness + every per-language
-# adapter and pinned scanner it drives via gate.toml. CI pulls this image,
-# runs it against the source + built image, and on pass the harness signs the
-# image digest with cosign. Update the gate = bump the pins here + the tag.
+# adapter and pinned scanner it drives via the config/ tree. CI pulls this
+# image, runs it against the source + built image, and on pass the harness signs
+# the image digest with cosign. Update the gate = bump the pins here + the tag.
 
 # ── Stage 1: build the harness ──────────────────────────────────────────────
 # Rust 1.85+ required: a transitive dep (clap) needs edition2024 cargo support,
@@ -11,7 +11,6 @@
 FROM rust:1.85-slim-bookworm AS harness
 WORKDIR /build
 COPY harness ./harness
-COPY gate.toml ./gate.toml
 RUN cargo build --release --manifest-path harness/Cargo.toml \
     && cp harness/target/release/grizzly-gate /usr/local/bin/grizzly-gate
 
@@ -20,7 +19,9 @@ FROM debian:bookworm-slim
 
 # Pinned tool versions — bump deliberately, never float.
 ARG RUST_VERSION=1.85.0
-ARG CARGO_DENY_VERSION=0.16.3
+# 0.19.x required: older cargo-deny can't parse RUSTSEC advisories that use
+# CVSS 4.0 vectors (fails advisory-db load on current entries).
+ARG CARGO_DENY_VERSION=0.19.9
 ARG COSIGN_VERSION=2.4.1
 ARG TRIVY_VERSION=0.71.2
 ARG GITLEAKS_VERSION=8.21.2
@@ -87,16 +88,26 @@ RUN curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_V
     && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
         | tar -xz -C /usr/local/bin gitleaks
 
-# Vendor a pinned Semgrep ruleset (offline, no registry fetch at scan time)
-# and warm the Trivy vuln DB so scans are reproducible at this build's point.
-RUN git clone --depth 1 --branch "${SEMGREP_RULES_REF}" \
-        https://github.com/semgrep/semgrep-rules /etc/grizzly-gate/semgrep \
-    && rm -rf /etc/grizzly-gate/semgrep/.git \
+# Ship the gate's config tree (per-tool manifests + native configs), then vendor
+# a pinned Semgrep ruleset into the semgrep tool dir (offline, no registry fetch
+# at scan time) and warm the Trivy vuln DB so scans are reproducible at this
+# build's point.
+COPY config/ /etc/grizzly-gate/config/
+RUN SEMGREP_RULES=/etc/grizzly-gate/config/util/semgrep/rules \
+    && git clone --depth 1 --branch "${SEMGREP_RULES_REF}" \
+        https://github.com/semgrep/semgrep-rules "${SEMGREP_RULES}" \
+    && rm -rf "${SEMGREP_RULES}/.git" \
+    # semgrep loads every YAML under --config as a rule and hard-fails on any
+    # non-rule file (the repo ships meta/CI/test YAML: .pre-commit-config.yaml,
+    # stats/, .github/, *.test.yaml, …). Drop every YAML lacking a top-level
+    # `rules:` key. Content-based rather than path-based so an upstream layout
+    # change on the (unpinned) ref can't silently reintroduce a breaking file.
+    && find "${SEMGREP_RULES}" -type f \( -name '*.yml' -o -name '*.yaml' \) \
+        -exec sh -c 'grep -qE "^rules:" "$1" || rm -f "$1"' _ {} \; \
     && trivy image --download-db-only
 
 COPY --from=harness /usr/local/bin/grizzly-gate /usr/local/bin/grizzly-gate
-COPY gate.toml /etc/grizzly-gate/gate.toml
 
-# Default config path so callers can just `grizzly-gate --source ... --image ...`.
-ENV GRIZZLY_GATE_DEFAULT_CONFIG=/etc/grizzly-gate/gate.toml
+# Default config root so callers can just `grizzly-gate --source ... --image ...`.
+ENV GRIZZLY_GATE_CONFIG_DIR=/etc/grizzly-gate/config
 ENTRYPOINT ["/usr/local/bin/grizzly-gate"]

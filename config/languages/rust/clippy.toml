@@ -1,0 +1,13 @@
+# Gate-owned clippy config (discovered via CLIPPY_CONF_DIR). clippy.toml can only
+# set *configurable* lint options, not lint *levels* — the deny/warn/allow levels
+# folded from residuum are passed on the command line in manifest.toml so they
+# override a repo's own Cargo.toml [lints]. This file holds the bits that have to
+# live in clippy.toml.
+#
+# The gate denies unwrap/expect/panic/dbg as a hard floor, but test code
+# legitimately uses them — exempt tests so the regime is usable rather than
+# forcing #[expect] on every assertion.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true

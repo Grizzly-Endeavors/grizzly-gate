@@ -1,0 +1,14 @@
+# Gate-owned rustfmt config (authoritative; passed via `cargo fmt -- --config-path`).
+# Folded from the residuum house style. Stable-channel options only — the gate
+# runs stable rustfmt, and unstable options would error. (`cargo fmt` supplies
+# the crate's edition from its Cargo.toml, overriding any edition set here.)
+max_width = 100
+tab_spaces = 4
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true
+
+# Nightly-only niceties residuum would use under a nightly toolchain; left off
+# here because stable rustfmt rejects them:
+#   imports_granularity = "Module"
+#   group_imports = "StdExternalCrate"

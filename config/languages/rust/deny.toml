@@ -1,0 +1,42 @@
+# Gate-owned cargo-deny config (authoritative; passed via `--config`). Folded
+# from the residuum house config, generalized for the whole fleet: no repo-
+# specific advisory ignores and no local db-path (the gate resolves the advisory
+# DB itself). This replaces any deny.toml shipped in the repo being gated.
+
+[advisories]
+version = 2
+# Vulnerabilities and unmaintained crates fail the gate. The universal gate
+# carries NO ignore list — a repo that must accept a specific advisory documents
+# it in its own tree (and is responsible for it), not here.
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+unused-allowed-license = "allow"
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "BSL-1.0",
+  "MPL-2.0",
+  "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+# Stricter than residuum: wildcard (`*`) version requirements are denied — they
+# defeat reproducible dependency resolution.
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

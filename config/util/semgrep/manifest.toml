@@ -1,0 +1,6 @@
+# SAST scanner. Runs against the source tree on every invocation, using the
+# offline ruleset vendored into `{config}/rules` at image build time (no
+# registry fetch at scan time — reproducible per gate version).
+name = "semgrep"
+scope = "source"
+cmd = "semgrep scan --error --quiet --config {config}/rules {source}"

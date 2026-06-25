@@ -1,0 +1,10 @@
+# YAML language adapter. Activated by a `.yamllint` at the source root — a repo
+# opts into YAML linting by shipping that marker, but the *rules* applied are the
+# gate's own config below, not the repo's (its `.yamllint` content is ignored).
+name = "yaml"
+marker = ".yamllint"
+
+[[checks]]
+name = "yamllint"
+# --strict: warnings (not just errors) fail the gate — warnings are blockers.
+cmd = "yamllint --strict -c {config}/yamllint.yml ."

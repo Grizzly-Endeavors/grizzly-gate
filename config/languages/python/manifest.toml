@@ -1,0 +1,17 @@
+# Python language adapter. Activated by a `pyproject.toml` at the source root.
+# Each tool is pointed at the gate's own config, so a repo's pyproject/ruff/mypy
+# settings cannot relax the checks.
+name = "python"
+marker = "pyproject.toml"
+
+[[checks]]
+name = "ruff"
+cmd = "ruff check --config {config}/ruff.toml ."
+
+[[checks]]
+name = "mypy"
+cmd = "mypy --config-file {config}/mypy.ini ."
+
+[[checks]]
+name = "pytest"
+cmd = "pytest -c {config}/pytest.ini -q"

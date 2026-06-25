@@ -1,0 +1,7 @@
+# Gate-owned gitleaks config (passed via --config, authoritative over any
+# .gitleaks.toml in the repo). Extends gitleaks' built-in ruleset; add
+# platform-specific rules or allowlist entries here.
+title = "grizzly-gate gitleaks ruleset"
+
+[extend]
+useDefault = true

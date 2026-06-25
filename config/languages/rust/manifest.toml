@@ -1,0 +1,68 @@
+# Rust language adapter. Activated by a `Cargo.toml` at the source root; each
+# check is forced onto the gate's own config (colocated here), not the repo's.
+name = "rust"
+marker = "Cargo.toml"
+
+[[checks]]
+name = "fmt"
+# rustfmt options (--config-path) must follow `--`; they are not `cargo fmt` args.
+cmd = "cargo fmt --all --check -- --config-path {config}/rustfmt.toml"
+
+[[checks]]
+name = "clippy"
+# Lint LEVELS are passed here (not in clippy.toml, which can't set levels) so they
+# override a repo's Cargo.toml [lints] — rustc applies command-line flags last.
+# Folded from residuum's house lints, "safety core": shortcuts, panics, debug/
+# incomplete code, and suppression hygiene are denied; pedantic is on and blocking
+# (warnings are blockers); the daemon-specific (print_stderr, exit) and doc-
+# discipline (missing_*_doc, must_use_candidate) lints are intentionally allowed.
+# Configurable thresholds + test exemptions live in clippy.toml (CLIPPY_CONF_DIR).
+cmd = """cargo clippy --all-targets --all-features -- \
+-W clippy::pedantic \
+-D warnings \
+-D unsafe_code \
+-D clippy::unwrap_used \
+-D clippy::expect_used \
+-D clippy::panic \
+-D clippy::get_unwrap \
+-D clippy::map_err_ignore \
+-D clippy::let_underscore_must_use \
+-D clippy::indexing_slicing \
+-D clippy::string_slice \
+-D clippy::todo \
+-D clippy::unimplemented \
+-D clippy::dbg_macro \
+-D clippy::missing_assert_message \
+-D clippy::allow_attributes \
+-D clippy::allow_attributes_without_reason \
+-D clippy::format_push_string \
+-D clippy::redundant_type_annotations \
+-D clippy::needless_raw_strings \
+-D clippy::error_impl_error \
+-D clippy::tests_outside_test_module \
+-D clippy::empty_structs_with_brackets \
+-D clippy::rest_pat_in_fully_bound_structs \
+-D clippy::verbose_file_reads \
+-D clippy::clone_on_ref_ptr \
+-D clippy::multiple_inherent_impl \
+-D clippy::same_name_method \
+-D clippy::unseparated_literal_suffix \
+-D clippy::if_then_some_else_none \
+-D clippy::shadow_unrelated \
+-D clippy::wildcard_enum_match_arm \
+-D clippy::rc_buffer \
+-D clippy::rc_mutex \
+-A clippy::module_name_repetitions \
+-A clippy::missing_errors_doc \
+-A clippy::missing_panics_doc \
+-A clippy::must_use_candidate"""
+env = { CLIPPY_CONF_DIR = "{config}" }
+
+[[checks]]
+name = "deny"
+cmd = "cargo deny check --config {config}/deny.toml"
+
+[[checks]]
+name = "test"
+# No external config to own; Cargo.toml defines the test surface.
+cmd = "cargo test --all-targets"

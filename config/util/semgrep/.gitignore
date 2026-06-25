@@ -1,0 +1,3 @@
+# The semgrep ruleset is vendored into ./rules at image build time (Dockerfile),
+# not committed. Keep it out of the repo.
+/rules/

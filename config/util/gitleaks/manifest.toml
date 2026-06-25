@@ -1,0 +1,4 @@
+# Secret scanner. Runs against the source tree on every invocation.
+name = "gitleaks"
+scope = "source"
+cmd = "gitleaks detect --source {source} --config {config}/gitleaks.toml --no-banner --redact --exit-code 1"

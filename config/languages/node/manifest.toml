@@ -1,0 +1,21 @@
+# Node language adapter. Activated by a `package.json` at the source root.
+# `npm ci` installs the repo's deps (needed for type resolution); lint + typecheck
+# then run against the gate's own config rather than the repo's.
+#
+# NOTE: tsc and eslint are the structurally-fragile cases called out in the plan
+# (a repo's tsconfig defines its own module/path layout). The gate-owned configs
+# here are a strict baseline; project-aware handling lands with later tooling.
+name = "node"
+marker = "package.json"
+
+[[checks]]
+name = "deps"
+cmd = "npm ci"
+
+[[checks]]
+name = "eslint"
+cmd = "eslint --config {config}/eslint.config.mjs --no-config-lookup --no-error-on-unmatched-pattern ."
+
+[[checks]]
+name = "tsc"
+cmd = "tsc --noEmit --project {config}/tsconfig.base.json"

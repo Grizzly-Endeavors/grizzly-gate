@@ -1,0 +1,14 @@
+# Gate-owned trivy config (passed via --config). Fails the gate on HIGH/CRITICAL
+# vulnerabilities. The vuln DB is warmed into the image at build time, so scans
+# are reproducible at that build's point.
+severity:
+  - HIGH
+  - CRITICAL
+
+vulnerability:
+  type:
+    - os
+    - library
+  # Don't fail on vulns that have no fix available yet — they're not actionable
+  # at gate time and would block deploys indefinitely.
+  ignore-unfixed: true

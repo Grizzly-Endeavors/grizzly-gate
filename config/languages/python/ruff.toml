@@ -1,0 +1,23 @@
+# Gate-owned ruff config (authoritative; passed via `--config`). Mirrors the
+# residuum philosophy in Python terms: enable everything, then carve out only
+# genuine conflicts. ruff has no warn/error split — any selected violation fails
+# the gate, so "warnings are blockers" is the default.
+target-version = "py311"
+line-length = 100
+
+[lint]
+# Maximum enforcement: every rule group on, then a minimal ignore list for rules
+# that directly conflict with each other or with an autoformatter.
+select = ["ALL"]
+ignore = [
+  "D203",    # one-blank-line-before-class — conflicts with D211 (no blank line)
+  "D213",    # multi-line-summary-second-line — conflicts with D212 (first line)
+  "COM812",  # trailing-comma — defer to the formatter, not the linter
+  "ISC001",  # single-line-implicit-concat — same, formatter's job
+]
+
+[lint.per-file-ignores]
+# Tests legitimately use asserts, magic values, and skip annotations/docstrings.
+"**/test_*.py" = ["S101", "PLR2004", "ANN", "D", "INP001"]
+"**/tests/**" = ["S101", "PLR2004", "ANN", "D", "INP001"]
+"**/conftest.py" = ["ANN", "D", "INP001"]

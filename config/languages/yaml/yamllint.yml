@@ -1,0 +1,24 @@
+# Gate-owned yamllint config (authoritative; passed via -c, run with --strict so
+# warnings block). Based on the default ruleset, tightened. line-length is kept
+# generous-but-enforced (long lines are common in Helm/CI YAML) rather than
+# disabled — at error level under --strict.
+extends: default
+
+rules:
+  line-length:
+    max: 160
+    level: error
+    allow-non-breakable-words: true
+  # A document start marker (---) is required for consistency.
+  document-start:
+    present: true
+  truthy:
+    # Allow yes/no/on/off as keys (common in CI/Ansible YAML) but require
+    # canonical true/false as values.
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: enable
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true

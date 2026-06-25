@@ -1,0 +1,9 @@
+# Ansible language adapter. Activated by an `ansible` directory at the source
+# root. ansible-lint runs against the gate's own ruleset, not the repo's.
+name = "ansible"
+marker = "ansible"
+
+[[checks]]
+name = "ansible-lint"
+# --strict: warnings are treated as failures — warnings are blockers.
+cmd = "ansible-lint --strict -c {config}/ansible-lint.yml"

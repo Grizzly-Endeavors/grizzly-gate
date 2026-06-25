@@ -1,0 +1,6 @@
+# Gate-owned ansible-lint config (authoritative; passed via -c, run with
+# --strict). The `production` profile is ansible-lint's strictest built-in bar;
+# nothing above it exists, so this is already maximum enforcement.
+profile: production
+
+use_default_rules: true

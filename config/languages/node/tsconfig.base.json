@@ -1,0 +1,13 @@
+{
+  "//": "Gate-owned base tsconfig (passed via --project). Defines the platform's compiler strictness baseline. Known limitation: a repo's own module/path layout is not honored here — project-aware typechecking is deferred to later tooling (see manifest.toml).",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  }
+}

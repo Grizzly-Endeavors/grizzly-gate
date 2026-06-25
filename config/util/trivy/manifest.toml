@@ -1,0 +1,5 @@
+# Image SBOM/CVE scanner. Runs only when the harness is given a built image
+# (`--image`), against the gate's own trivy config.
+name = "trivy-image"
+scope = "image"
+cmd = "trivy image --quiet --exit-code 1 --config {config}/trivy.yaml {image}"

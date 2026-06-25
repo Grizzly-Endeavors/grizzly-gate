@@ -1,6 +1,6 @@
 [package]
 name = "grizzly-gate"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Orchestration harness for the grizzly-platform CI gate"
 license = "MIT"
