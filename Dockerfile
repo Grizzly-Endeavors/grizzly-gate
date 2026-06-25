@@ -33,7 +33,9 @@ ARG ANSIBLE_LINT_VERSION=24.12.2
 ARG YAMLLINT_VERSION=1.35.1
 ARG ESLINT_VERSION=9.17.0
 ARG TYPESCRIPT_VERSION=5.7.2
-ARG SEMGREP_RULES_REF=v1.97.0
+# semgrep-rules has its own ref scheme (not aligned to the semgrep CLI version);
+# its default branch is `develop`. TODO: pin to a commit SHA for reproducibility.
+ARG SEMGREP_RULES_REF=develop
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/cargo/bin:/usr/local/node/bin:/usr/local/bin:$PATH \
@@ -51,7 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Rust toolchain (clippy + rustfmt) via rustup, plus cargo-deny (prebuilt).
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y \
         --default-toolchain "${RUST_VERSION}" \
-        --profile minimal --component clippy rustfmt \
+        --profile minimal -c clippy -c rustfmt \
     && curl -fsSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
         | tar -xz -C /tmp \
     && mv "/tmp/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny" /usr/local/cargo/bin/cargo-deny
