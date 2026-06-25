@@ -64,16 +64,18 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
     && mv "/usr/local/node-v${NODE_VERSION}-linux-x64" /usr/local/node \
     && npm install -g "eslint@${ESLINT_VERSION}" "typescript@${TYPESCRIPT_VERSION}"
 
-# Python tooling in an isolated venv on PATH.
-RUN python3 -m venv /usr/local/pyenv \
-    && /usr/local/pyenv/bin/pip install --no-cache-dir \
-        "semgrep==${SEMGREP_VERSION}" \
-        "ruff==${RUFF_VERSION}" \
-        "mypy==${MYPY_VERSION}" \
-        "pytest==${PYTEST_VERSION}" \
-        "ansible-lint==${ANSIBLE_LINT_VERSION}" \
-        "yamllint==${YAMLLINT_VERSION}"
-ENV PATH=/usr/local/pyenv/bin:$PATH
+# Python tooling — each CLI in its own isolated venv via pipx, so their
+# transitive deps can't conflict (semgrep and ansible-lint are not
+# co-installable in one environment). pipx entrypoints land in /usr/local/bin.
+ENV PIPX_HOME=/opt/pipx \
+    PIPX_BIN_DIR=/usr/local/bin
+RUN pip install --no-cache-dir --break-system-packages pipx \
+    && pipx install "semgrep==${SEMGREP_VERSION}" \
+    && pipx install "ruff==${RUFF_VERSION}" \
+    && pipx install "mypy==${MYPY_VERSION}" \
+    && pipx install "pytest==${PYTEST_VERSION}" \
+    && pipx install "ansible-lint==${ANSIBLE_LINT_VERSION}" \
+    && pipx install "yamllint==${YAMLLINT_VERSION}"
 
 # cosign, trivy, gitleaks (prebuilt binaries, pinned).
 RUN curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" \
