@@ -1,0 +1,22 @@
+[package]
+name = "grizzly-gate"
+version = "0.1.0"
+edition = "2021"
+description = "Orchestration harness for the grizzly-platform CI gate"
+license = "MIT"
+
+[[bin]]
+name = "grizzly-gate"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.95"
+clap = { version = "4.5.23", features = ["derive"] }
+serde = { version = "1.0.217", features = ["derive"] }
+toml = "0.8.19"
+shlex = "1.3.0"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
