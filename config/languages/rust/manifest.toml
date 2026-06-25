@@ -3,6 +3,11 @@
 name = "rust"
 marker = "Cargo.toml"
 
+# Honest-map evidence: any `.rs` file in the tree must be covered by a declared
+# rust project, or the gate fails closed (harness `detect`).
+[detect]
+extensions = ["rs"]
+
 [[checks]]
 name = "fmt"
 # rustfmt options (--config-path) must follow `--`; they are not `cargo fmt` args.

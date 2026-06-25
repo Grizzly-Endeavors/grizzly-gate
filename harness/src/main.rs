@@ -7,10 +7,13 @@
 //! where Kyverno refuses to admit any image lacking it.
 
 mod config;
+mod detect;
+mod gateconfig;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use config::Scope;
+use gateconfig::ResolvedProject;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -82,8 +85,28 @@ fn main() -> Result<()> {
         println!("grizzly-gate :: image {image}");
     }
 
-    let source_str = source.to_string_lossy().to_string();
-    let results = run_checks(&tree, &source, &source_str, cli.image.as_deref());
+    // --- Honest map: required declaration, then independent verification -----
+    // The repo must ship a gate-config.json that truthfully maps its layout, and
+    // the tree must contain no undeclared or unsupported code. Both are fatal
+    // (fail closed) and happen before any check runs — a repo that lies about
+    // (or omits) its contents never reaches the checks, let alone signing.
+    let projects = gateconfig::load(&source, &tree)?;
+    println!(
+        "grizzly-gate :: gate-config.json declares {} project(s)",
+        projects.len()
+    );
+    for p in &projects {
+        let where_ = if p.rel_path.as_os_str().is_empty() {
+            ".".to_string()
+        } else {
+            p.rel_path.display().to_string()
+        };
+        println!("grizzly-gate ::   - {} @ {where_}", p.language);
+    }
+    detect::verify(&source, &tree, &projects).context("honest-map verification")?;
+    println!("grizzly-gate :: honest-map verification passed");
+
+    let results = run_checks(&tree, &source, cli.image.as_deref(), &projects)?;
 
     // --- Verdict -----------------------------------------------------------
     println!("\n────────────────────────── gate summary ──────────────────────────");
@@ -131,56 +154,78 @@ struct Subst<'a> {
     source: Option<&'a str>,
     image: Option<&'a str>,
     config: Option<&'a str>,
+    /// Path passed to `tsc --project` for node projects: either the repo's own
+    /// tsconfig wrapped to force gate strictness, or the gate's base tsconfig.
+    tsconfig: Option<&'a str>,
 }
 
-/// Run every applicable adapter check (marker present) and every scanner in
-/// scope, returning their results in execution order.
+/// Run each declared project's adapter checks (in its own directory) and every
+/// scanner in scope, returning their results in execution order.
+///
+/// Adapters run per *declared project* — not by scanning the root for a marker —
+/// so a Rust crate in a subdir or a second project in a monorepo is checked
+/// exactly where the (already-verified) `gate-config.json` says it lives.
 fn run_checks(
     tree: &config::Tree,
     source: &Path,
-    source_str: &str,
     image: Option<&str>,
-) -> Vec<StepResult> {
+    projects: &[ResolvedProject],
+) -> Result<Vec<StepResult>> {
     let mut results: Vec<StepResult> = Vec::new();
 
-    // --- Language adapters -------------------------------------------------
-    let mut matched_any = false;
-    for adapter in &tree.adapters {
-        if !source.join(&adapter.marker).exists() {
-            continue;
-        }
-        matched_any = true;
+    // --- Language adapters, per declared project ---------------------------
+    for project in projects {
+        let adapter = tree
+            .adapters
+            .iter()
+            .find(|a| a.name == project.language)
+            .with_context(|| format!("no adapter for declared language {:?}", project.language))?;
+
         let cfg = adapter.config_dir.to_string_lossy().to_string();
+        let proj_str = project.abs_path.to_string_lossy().to_string();
+        let where_ = if project.rel_path.as_os_str().is_empty() {
+            ".".to_string()
+        } else {
+            project.rel_path.display().to_string()
+        };
         println!(
-            "\n=== stack: {} (marker: {}) ===",
+            "\n=== {} @ {where_} (marker: {}) ===",
             adapter.name, adapter.marker
         );
+
+        // For node, resolve the tsconfig the checks use. A repo-declared tsconfig
+        // is wrapped so its module/path resolution is honored while the gate's
+        // strictness is force-overridden; the wrapper is cleaned up after.
+        let ts = resolve_tsconfig(adapter, project)?;
         let subst = Subst {
-            source: Some(source_str),
+            source: Some(&proj_str),
             image: None,
             config: Some(&cfg),
+            tsconfig: ts.as_ref().map(|t| t.arg.as_str()),
         };
         for check in &adapter.checks {
             results.push(run(
                 &format!("{}:{}", adapter.name, check.name),
                 &check.cmd,
-                source,
+                &project.abs_path,
                 subst,
                 &check.env,
             ));
         }
-    }
-    if !matched_any {
-        println!("grizzly-gate :: no language markers matched — running scanners only");
+        if let Some(t) = ts {
+            t.cleanup();
+        }
     }
 
     // --- Scanners ----------------------------------------------------------
+    let source_str = source.to_string_lossy().to_string();
     for scanner in &tree.scanners {
         let cfg = scanner.config_dir.to_string_lossy().to_string();
         let subst = Subst {
-            source: Some(source_str),
+            source: Some(&source_str),
             image,
             config: Some(&cfg),
+            tsconfig: None,
         };
         let label = format!("scan:{}", scanner.name);
         match scanner.scope {
@@ -195,7 +240,87 @@ fn run_checks(
         }
     }
 
-    results
+    Ok(results)
+}
+
+/// The tsconfig a node project's `tsc` check should use, plus any temp wrapper
+/// to clean up afterwards. Non-node adapters get `None`.
+struct ResolvedTsconfig {
+    /// Value substituted for `{tsconfig}` (an absolute path).
+    arg: String,
+    /// Wrapper file to delete after the check (when a repo tsconfig was wrapped).
+    temp: Option<PathBuf>,
+}
+
+impl ResolvedTsconfig {
+    fn cleanup(self) {
+        if let Some(p) = self.temp {
+            // Best-effort: the wrapper lives in an ephemeral CI checkout, but a
+            // failed unlink is surfaced rather than silently swallowed.
+            if let Err(e) = std::fs::remove_file(&p) {
+                eprintln!(
+                    "grizzly-gate :: warning: could not remove tsconfig wrapper {}: {e}",
+                    p.display()
+                );
+            }
+        }
+    }
+}
+
+/// Generated wrapper filename written into a node project to force gate
+/// strictness on top of the repo's own tsconfig.
+const TS_WRAPPER: &str = ".grizzly-gate.tsconfig.json";
+
+fn resolve_tsconfig(
+    adapter: &config::LanguageAdapter,
+    project: &ResolvedProject,
+) -> Result<Option<ResolvedTsconfig>> {
+    if adapter.name != "node" {
+        return Ok(None);
+    }
+    let Some(repo_ts) = &project.tsconfig else {
+        // No repo tsconfig declared: use the gate's strict base config as-is.
+        let base = adapter.config_dir.join("tsconfig.base.json");
+        return Ok(Some(ResolvedTsconfig {
+            arg: base.to_string_lossy().to_string(),
+            temp: None,
+        }));
+    };
+
+    // Wrap the repo tsconfig: `extends` it for module/path resolution, then
+    // force every strict compiler option locally. `extends` is overridden
+    // per-key by these locals, and `strict` is expanded into its full family so
+    // a repo cannot opt out of an individual sub-flag (e.g. strictNullChecks).
+    // tsc's default `include` (every TS file under the wrapper's dir, minus
+    // node_modules) means a repo cannot shrink the typechecked set either.
+    let wrapper = serde_json::json!({
+        "extends": repo_ts.to_string_lossy(),
+        "compilerOptions": {
+            "noEmit": true,
+            "strict": true,
+            "noImplicitAny": true,
+            "strictNullChecks": true,
+            "strictFunctionTypes": true,
+            "strictBindCallApply": true,
+            "strictPropertyInitialization": true,
+            "noImplicitThis": true,
+            "useUnknownInCatchVariables": true,
+            "alwaysStrict": true,
+            "forceConsistentCasingInFileNames": true,
+            "skipLibCheck": true,
+        }
+    });
+    let path = project.abs_path.join(TS_WRAPPER);
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&wrapper).context("serializing tsconfig wrapper")?,
+    )
+    .with_context(|| format!("writing tsconfig wrapper {}", path.display()))?;
+
+    Ok(Some(ResolvedTsconfig {
+        arg: path.to_string_lossy().to_string(),
+        temp: Some(path),
+    }))
 }
 
 /// Run one command line in `cwd` after applying `subst` to the command and to
@@ -217,6 +342,9 @@ fn run(
         }
         if let Some(v) = subst.config {
             r = r.replace("{config}", v);
+        }
+        if let Some(v) = subst.tsconfig {
+            r = r.replace("{tsconfig}", v);
         }
         r
     };

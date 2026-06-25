@@ -1,12 +1,26 @@
-# Node language adapter. Activated by a `package.json` at the source root.
-# `npm ci` installs the repo's deps (needed for type resolution); lint + typecheck
-# then run against the gate's own config rather than the repo's.
+# Node language adapter. Activated by a declared node project (`package.json`
+# marker). `npm ci` installs the repo's deps (needed for type resolution); lint +
+# typecheck then run against the gate's own config rather than the repo's.
 #
-# NOTE: tsc and eslint are the structurally-fragile cases called out in the plan
-# (a repo's tsconfig defines its own module/path layout). The gate-owned configs
-# here are a strict baseline; project-aware handling lands with later tooling.
+# eslint + tsc run from the gate's own toolchain (installed into this dir's
+# node_modules at image build — see Dockerfile), so the flat config can resolve
+# typescript-eslint and TS files get full type-aware linting, not just JS.
+#
+# tsc is the structurally-fragile case (a repo's tsconfig defines its own
+# module/path layout). When a project sets `tsconfig` in gate-config.json, the
+# harness wraps that tsconfig — honoring its module/path resolution while force-
+# overriding the strict compiler family, so the repo cannot relax strictness. The
+# same wrapped tsconfig drives type-aware eslint (via GATE_TSCONFIG). A node
+# project containing TypeScript must declare its `tsconfig` (harness fails closed
+# otherwise); a JS-only project may omit it and use the gate's `tsconfig.base.json`.
 name = "node"
 marker = "package.json"
+
+# Honest-map evidence: any TS/JS file (or extensionless `node` shebang script)
+# must be covered by a declared node project (harness `detect`).
+[detect]
+extensions = ["ts", "tsx", "js", "jsx", "mjs", "cjs"]
+shebangs = ["node"]
 
 [[checks]]
 name = "deps"
@@ -14,8 +28,13 @@ cmd = "npm ci"
 
 [[checks]]
 name = "eslint"
-cmd = "eslint --config {config}/eslint.config.mjs --no-config-lookup --no-error-on-unmatched-pattern ."
+# Type-aware rules need the TS program; GATE_TSCONFIG hands the flat config the
+# same wrapped tsconfig tsc uses. Gate-owned binary so the toolchain is fixed.
+cmd = "{config}/node_modules/.bin/eslint --config {config}/eslint.config.mjs --no-config-lookup --no-error-on-unmatched-pattern ."
+env = { GATE_TSCONFIG = "{tsconfig}" }
 
 [[checks]]
 name = "tsc"
-cmd = "tsc --noEmit --project {config}/tsconfig.base.json"
+# `--project` carries noEmit/strictness via the (wrapped) tsconfig; passing those
+# as flags too conflicts with `-p` on some tsc versions, so they live in config.
+cmd = "{config}/node_modules/.bin/tsc --project {tsconfig}"

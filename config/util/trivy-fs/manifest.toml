@@ -1,0 +1,8 @@
+# Source dependency (SCA) scanner — Trivy filesystem mode. Scans committed
+# lockfiles for known-vulnerable packages across ecosystems, using Trivy's
+# aggregated advisory DB (GitHub advisories + OSV + vendor feeds) — a broader,
+# second vuln source alongside osv-scanner. Source scope: runs every invocation,
+# pre-build, independent of whether a dep ends up in the final image.
+name = "trivy-fs"
+scope = "source"
+cmd = "trivy fs --quiet --no-progress --exit-code 1 --config {config}/trivy.yaml {source}"

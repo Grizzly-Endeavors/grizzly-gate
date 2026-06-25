@@ -1,0 +1,100 @@
+# Ops-owned language-detection ruleset for the gate's honest-map verification.
+#
+# The harness walks the scanned repo and classifies every file. Adapter-backed
+# code (extensions declared in each `languages/<lang>/manifest.toml` `[detect]`)
+# must be covered by a matching project in the repo's `gate-config.json`. Code in
+# a language listed below has no gate adapter and is a hard failure — a green
+# gate must mean "every line was actually checked", so the gate refuses to pass
+# any repo containing code it cannot check. Adding support for one of these means
+# adding a real adapter under `languages/`, not loosening this file.
+#
+# This file is REQUIRED: the harness fails closed if it is missing or unparseable,
+# so a stripped-down config dir can never silently disable detection.
+
+# Directory NAMES never descended into during the walk (matched at any depth).
+# These hold dependencies / build artifacts / VCS data — not first-party code —
+# so linting them is neither possible nor meaningful. They remain covered by the
+# secret (gitleaks) and SAST (semgrep) scanners, which walk the whole tree. NOTE:
+# this is the one detection boundary an attacker could exploit (hide code under
+# one of these names); keep the list tight and dependency-specific. `.git` is
+# always skipped regardless of this list.
+skip_dirs = [
+  "node_modules",
+  "target",
+  "vendor",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".cargo",
+  ".gradle",
+  ".tox",
+  "dist",
+  "build",
+]
+
+# --- Unsupported code languages (any evidence => fail closed) ----------------
+# Extensions are matched case-insensitively (no leading dot). Shebangs match the
+# interpreter basename of an extensionless script (`#!/usr/bin/env ruby`).
+
+[[unsupported]]
+name = "go"
+extensions = ["go"]
+
+[[unsupported]]
+name = "ruby"
+extensions = ["rb", "rake", "gemspec"]
+shebangs = ["ruby"]
+
+[[unsupported]]
+name = "java"
+extensions = ["java"]
+
+[[unsupported]]
+name = "kotlin"
+extensions = ["kt", "kts"]
+
+[[unsupported]]
+name = "scala"
+extensions = ["scala", "sc"]
+
+[[unsupported]]
+name = "c"
+extensions = ["c", "h"]
+
+[[unsupported]]
+name = "cpp"
+extensions = ["cc", "cpp", "cxx", "hpp", "hh", "hxx"]
+
+[[unsupported]]
+name = "csharp"
+extensions = ["cs"]
+
+[[unsupported]]
+name = "php"
+extensions = ["php"]
+shebangs = ["php"]
+
+[[unsupported]]
+name = "swift"
+extensions = ["swift"]
+
+[[unsupported]]
+name = "perl"
+extensions = ["pl", "pm"]
+shebangs = ["perl"]
+
+[[unsupported]]
+name = "lua"
+extensions = ["lua"]
+shebangs = ["lua"]
+
+[[unsupported]]
+name = "elixir"
+extensions = ["ex", "exs"]
+
+[[unsupported]]
+name = "dart"
+extensions = ["dart"]

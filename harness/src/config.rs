@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+/// Filename of the Ops-owned language-detection ruleset at the config root.
+const DETECT: &str = "detect.toml";
+
 /// The full gate rule set, loaded from a config *tree* rather than a single
 /// file. Ops owns the tree: each tool carries its own `manifest.toml` (what to
 /// run) next to the native config file(s) the gate forces it to use. Updating
@@ -12,6 +15,10 @@ use serde::Deserialize;
 pub struct Tree {
     pub adapters: Vec<LanguageAdapter>,
     pub scanners: Vec<Scanner>,
+    /// Ops-owned detection ruleset (`detect.toml`): vendor/build dirs the
+    /// honest-map walk skips, plus the denylist of code languages the gate has
+    /// no adapter for (any evidence of which fails closed).
+    pub detect: DetectRules,
 }
 
 /// A per-language adapter (`config/languages/<lang>/manifest.toml`). When
@@ -25,7 +32,42 @@ pub struct LanguageAdapter {
     /// Absolute path to this tool's config dir, injected by the loader (not
     /// deserialized) and substituted for `{config}` in commands/env.
     pub config_dir: PathBuf,
+    /// File extensions / shebang interpreters that count as mandatory evidence
+    /// of this language for the honest-map verification. Present only for
+    /// unambiguous *code* languages (rust/python/node); empty for opt-in,
+    /// marker-only adapters (ansible/yaml) whose files are too ambiguous
+    /// (`.yml` is data as often as `IaC`) to mandate by extension.
+    pub detect: Detect,
     pub checks: Vec<Check>,
+}
+
+/// Extension/shebang evidence used to detect a language's presence in a tree.
+/// Matching is case-insensitive on the extension (no leading dot).
+#[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Detect {
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub shebangs: Vec<String>,
+}
+
+/// Ops-owned detection ruleset loaded from `<config-root>/detect.toml`.
+pub struct DetectRules {
+    /// Directory *names* never descended into during the honest-map walk
+    /// (VCS, dependency, and build-artifact dirs). Vendored code is not
+    /// first-party; the secret/SAST scanners still cover it.
+    pub skip_dirs: Vec<String>,
+    /// Code languages the gate cannot actually check. Any evidence of one in
+    /// the tree fails the gate closed — a green gate must mean "fully checked".
+    pub unsupported: Vec<UnsupportedLang>,
+}
+
+/// A code language with no gate adapter. Detected the same way as a supported
+/// one, but its presence is a hard failure rather than a run trigger.
+pub struct UnsupportedLang {
+    pub name: String,
+    pub detect: Detect,
 }
 
 /// One command within an adapter. `cmd` and `env` values may contain
@@ -66,7 +108,29 @@ struct AdapterManifest {
     name: String,
     marker: String,
     #[serde(default)]
+    detect: Detect,
+    #[serde(default)]
     checks: Vec<Check>,
+}
+
+/// Deserialized shape of `detect.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DetectManifest {
+    #[serde(default)]
+    skip_dirs: Vec<String>,
+    #[serde(default)]
+    unsupported: Vec<UnsupportedManifest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnsupportedManifest {
+    name: String,
+    #[serde(default)]
+    extensions: Vec<String>,
+    #[serde(default)]
+    shebangs: Vec<String>,
 }
 
 /// Deserialized shape of a `util/<tool>/manifest.toml`.
@@ -91,7 +155,37 @@ pub fn load_tree(root: &Path) -> Result<Tree> {
             root.display()
         );
     }
-    Ok(Tree { adapters, scanners })
+    let detect = load_detect(&root.join(DETECT))?;
+    Ok(Tree {
+        adapters,
+        scanners,
+        detect,
+    })
+}
+
+/// Load the Ops-owned detection ruleset. Required: a missing or unparseable
+/// `detect.toml` is fatal, so a stripped-down config dir can never silently
+/// disable undeclared-language detection.
+fn load_detect(path: &Path) -> Result<DetectRules> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {} (required for detection)", path.display()))?;
+    let m: DetectManifest =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let unsupported = m
+        .unsupported
+        .into_iter()
+        .map(|u| UnsupportedLang {
+            name: u.name,
+            detect: Detect {
+                extensions: u.extensions,
+                shebangs: u.shebangs,
+            },
+        })
+        .collect();
+    Ok(DetectRules {
+        skip_dirs: m.skip_dirs,
+        unsupported,
+    })
 }
 
 /// Tool dirs (those containing a `manifest.toml`) under a category, sorted by
@@ -125,6 +219,7 @@ fn load_adapters(dir: &Path) -> Result<Vec<LanguageAdapter>> {
             name: m.name,
             marker: m.marker,
             config_dir,
+            detect: m.detect,
             checks: m.checks,
         });
     }
@@ -175,7 +270,7 @@ mod tests {
         std::fs::create_dir_all(&util).unwrap();
         std::fs::write(
             lang.join(MANIFEST),
-            "name = \"rust\"\nmarker = \"Cargo.toml\"\n\n[[checks]]\nname = \"fmt\"\ncmd = \"cargo fmt --check --config-path {config}/rustfmt.toml\"\n",
+            "name = \"rust\"\nmarker = \"Cargo.toml\"\n\n[detect]\nextensions = [\"rs\"]\n\n[[checks]]\nname = \"fmt\"\ncmd = \"cargo fmt --check --config-path {config}/rustfmt.toml\"\n",
         )
         .unwrap();
         std::fs::write(
@@ -183,15 +278,24 @@ mod tests {
             "name = \"gitleaks\"\nscope = \"source\"\ncmd = \"gitleaks detect --source {source}\"\n",
         )
         .unwrap();
+        std::fs::write(
+            root.join(DETECT),
+            "skip_dirs = [\"target\"]\n\n[[unsupported]]\nname = \"go\"\nextensions = [\"go\"]\n",
+        )
+        .unwrap();
 
         let tree = load_tree(&root).unwrap();
         assert_eq!(tree.adapters.len(), 1);
         let adapter = tree.adapters.first().unwrap();
         assert_eq!(adapter.name, "rust");
+        assert_eq!(adapter.detect.extensions, ["rs"]);
         assert_eq!(adapter.checks.len(), 1);
         assert!(adapter.config_dir.ends_with("languages/rust"));
         assert_eq!(tree.scanners.len(), 1);
         assert_eq!(tree.scanners.first().unwrap().scope, Scope::Source);
+        assert_eq!(tree.detect.skip_dirs, ["target"]);
+        assert_eq!(tree.detect.unsupported.len(), 1);
+        assert_eq!(tree.detect.unsupported.first().unwrap().name, "go");
 
         std::fs::remove_dir_all(&root).ok();
     }

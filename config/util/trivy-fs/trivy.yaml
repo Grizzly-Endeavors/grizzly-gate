@@ -1,0 +1,24 @@
+# Gate-owned Trivy filesystem (source SCA) config, passed via --config. Scans the
+# repo's committed dependency lockfiles/manifests for known-vulnerable packages
+# across ecosystems (npm, PyPI, Go, …) using Trivy's aggregated advisory DB — a
+# second, broader vuln source alongside osv-scanner (union = more denial).
+#
+# Max-denial posture (cargo-deny parity): fail on EVERY severity, including
+# unfixable (unlike the image scanner, which ignores unfixed OS CVEs). The DB is
+# refreshed at scan time for freshest advisories.
+scan:
+  scanners:
+    - vuln
+severity:
+  - UNKNOWN
+  - LOW
+  - MEDIUM
+  - HIGH
+  - CRITICAL
+vulnerability:
+  # Source SCA is about the repo's declared dependencies, not OS packages.
+  type:
+    - library
+  # Deny even vulns with no fix yet — actionable here means "drop/replace the dep,"
+  # not "wait for a deploy." (The image scanner makes the opposite trade for OS CVEs.)
+  ignore-unfixed: false

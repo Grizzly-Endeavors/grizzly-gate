@@ -1,0 +1,15 @@
+# Source dependency (SCA) scanner — Google OSV-Scanner. The cargo-deny analog for
+# every non-Rust ecosystem (and a second pass over Rust): one scan fails on
+#   (a) any known vulnerability in a committed lockfile — OSV.dev, ALL severities,
+#       including unfixable (max-denial parity with cargo-deny); and
+#   (b) any dependency whose license falls outside the platform allowlist
+#       (deny-by-default, mirrors the Rust fleet's deny.toml; an unmapped or
+#       "non-standard" license is denied too).
+#
+# Advisory + license data is fetched FRESH at scan time (deps.dev / OSV.dev), so a
+# newly-disclosed CVE fails a previously-green build — intended. The step fails
+# closed if the data can't be fetched. `--allow-no-lockfiles` lets a repo with no
+# dependency manifests (e.g. pure Ansible/YAML) pass cleanly instead of erroring.
+name = "osv-scanner"
+scope = "source"
+cmd = 'osv-scanner scan source -r --allow-no-lockfiles --licenses="MIT,Apache-2.0,Apache-2.0 WITH LLVM-exception,BSD-2-Clause,BSD-3-Clause,ISC,Zlib,Unicode-3.0,Unicode-DFS-2016,MPL-2.0" {source}'

@@ -4,6 +4,12 @@
 name = "python"
 marker = "pyproject.toml"
 
+# Honest-map evidence: any `.py`/`.pyi` file (or extensionless `python`/`python3`
+# shebang script) must be covered by a declared python project (harness `detect`).
+[detect]
+extensions = ["py", "pyi"]
+shebangs = ["python", "python3"]
+
 [[checks]]
 name = "ruff"
 cmd = "ruff check --config {config}/ruff.toml ."
