@@ -223,7 +223,10 @@ fn run(
 /// cosign sign by digest. COSIGN_PASSWORD is inherited from the environment
 /// (delivered to the runner by ESO from OpenBao).
 fn sign_image(image: &str, key: &str, insecure: bool) -> Result<()> {
-    let mut args = vec!["sign", "--yes", "--key", key];
+    // --tlog-upload=false keeps signing self-contained: no dependency on (and no
+    // digest leakage to) the public Rekor transparency log. Verification is
+    // key-based, so a transparency log isn't needed.
+    let mut args = vec!["sign", "--yes", "--tlog-upload=false", "--key", key];
     if insecure {
         args.push("--allow-insecure-registry");
     }
