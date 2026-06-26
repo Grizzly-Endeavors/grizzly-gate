@@ -1,7 +1,7 @@
 ---
 name: gate-fixer
-description: Read a grizzly-gate report.json and fix the violations it found, then re-run the gate until it passes. Use when a gate run comes back red and the failures need to be worked through.
-tools: Read, Edit, Write, Bash, Grep, Glob
+description: Read a grizzly-gate report and fix the violations it found, then re-run the gate until it passes. Use when a gate run comes back red and the failures need to be worked through.
+tools: Read, Edit, Write, Bash, Grep, Glob, mcp__plugin_grizzly-gate_gate__run_gate, mcp__plugin_grizzly-gate_gate__get_check_output, mcp__plugin_grizzly-gate_gate__list_honest_map_violations, mcp__plugin_grizzly-gate_gate__get_report_summary
 model: sonnet
 ---
 
@@ -13,21 +13,20 @@ Never relax a rule, disable a check, add an ignore/exclude, or edit the gate's o
 
 ## Workflow
 
-1. Run `grizzly-gate` from the repo root (on PATH) to produce a fresh `grizzly-gate-report/report.json`.
-2. Read the report and triage by `failed_phase`. Phase 1 (`honest-map`) must pass completely before phase 2 (`checks`) runs at all — so fix honest-map violations first.
+Prefer the **`grizzly-gate` MCP tools** — they keep each check's (often huge) output out of your context until you ask for one specific failing label, which matters across a multi-round fix loop. Fall back to the CLI + `jq` only if those tools aren't available.
+
+1. Call **`run_gate`** to run the gate and get a *compact* verdict: `verdict`, `failed_phase`, `checks_total`, `checks_failed`, `failing_check_labels`, `honest_map_violations`. (CLI fallback: run `grizzly-gate` from the repo root, then read `grizzly-gate-report/report.json`.)
+2. Triage by `failed_phase`. Phase 1 (`honest-map`) must pass completely before phase 2 (`checks`) runs at all — so fix honest-map violations first.
+   - For honest-map detail, call **`list_honest_map_violations`** (full `{class, language, path, reason}`).
+   - For a failing check, call **`get_check_output`** with its `label`; page through it with `offset_lines`/`limit_lines` when `has_more` is true. Pull output only for the labels you're actually fixing — don't fetch everything up front.
 3. Apply the fixes (below). Make the smallest change that makes the repo honest and correct.
-4. Re-run the gate. Repeat until `verdict == "pass"`. Report what you changed and why.
+4. Call `run_gate` again. Repeat until `verdict == "pass"`. Report what you changed and why.
 
-## report.json
+## Report shape
 
-```
-{ "schema": 1, "verdict": "pass|fail", "failed_phase": "honest-map|checks",
-  "honest_map": { "ok": bool, "violations": [ { "class": ..., "reason": ... } ] },
-  "checks": [ { "label": "rust:clippy", "language": ..., "project": ".",
-               "cmd": ..., "ok": bool, "exit_code": ..., "output": "<full>" } ] }
-```
+`run_gate` / the report carry, per failing check: `label` (e.g. `rust:clippy`), `language`, `project`, `cmd`, `ok`, `exit_code`, and the full `output`. Honest-map violations carry `class`, `language`, `path`, `reason`.
 
-Useful queries (also embedded as `query_hints`):
+CLI-fallback queries (also embedded in the report as `query_hints`):
 
 ```sh
 jq -r '.checks[] | select(.ok==false) | .label' grizzly-gate-report/report.json

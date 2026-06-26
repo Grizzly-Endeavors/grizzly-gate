@@ -10,6 +10,11 @@
   "repository": "https://github.com/Grizzly-Endeavors/grizzly-gate",
   "license": "MIT",
   "keywords": ["ci", "gate", "pre-check", "cosign", "supply-chain"],
+  "mcpServers": {
+    "gate": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/grizzly-gate-mcp"
+    }
+  },
   "userConfig": {
     "block_push": {
       "type": "boolean",
