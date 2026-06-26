@@ -1,0 +1,19 @@
+{
+  "name": "grizzly-endeavors",
+  "owner": {
+    "name": "Grizzly Endeavors",
+    "email": "bearflinn@gmail.com"
+  },
+  "metadata": {
+    "description": "Plugins for the grizzly-platform project family."
+  },
+  "plugins": [
+    {
+      "name": "grizzly-gate",
+      "source": "./plugin",
+      "description": "Run the grizzly-gate local pre-check, read its report.json, onboard repos to the gate, and optionally block pushes of un-gated code.",
+      "category": "ci",
+      "tags": ["gate", "ci", "pre-check", "cosign", "supply-chain"]
+    }
+  ]
+}
