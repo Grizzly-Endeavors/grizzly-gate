@@ -17,11 +17,14 @@ Walk the tree and find every project root — the directory holding each adapter
 |---|---|---|
 | `rust` | `Cargo.toml` | — |
 | `python` | `pyproject.toml` | — |
-| `node` | `package.json` | required if the project contains any TypeScript |
+| `go` | `go.mod` | — |
+| `node` | `package.json` | required if the project contains any TypeScript — including a `.svelte` component with `<script lang="ts">` |
 | `ansible` | an `ansible/` directory | — |
 | `yaml` | a `.yamllint` file | — |
 
-Also scan for **un-adapted code** — any `.go`, `.rb`, `.java`, `.kt`, `.php`, `.cs`, `.c/.cpp`, etc. The gate has no adapter for these and hard-fails on them. If present, tell the user plainly: the repo cannot pass until that code is removed or Ops adds an adapter (a deliberate two-part change, not something this skill does). Do not try to hide it — a hostile tree walk will find it.
+Svelte and React are **not** separate languages — they ride the `node` adapter (a Svelte/React repo has a `package.json`). `.svelte`, `.jsx`, and `.tsx` files are covered by a declared `node` project; declare `node` and they're handled (svelte-check + react-hooks lint rules run automatically).
+
+Also scan for **un-adapted code** — any `.rb`, `.java`, `.kt`, `.php`, `.cs`, `.c/.cpp`, etc. The gate has no adapter for these and hard-fails on them. If present, tell the user plainly: the repo cannot pass until that code is removed or Ops adds an adapter (a deliberate two-part change, not something this skill does). Do not try to hide it — a hostile tree walk will find it.
 
 ## 2. Write `gate-config.json` at the repo root
 
@@ -42,7 +45,7 @@ Rules to honor:
 
 - `version` must be exactly `1`.
 - `path` is relative and in-tree (`.` is the repo root; `..` and absolute paths are rejected). The marker must actually exist there.
-- A `node` project containing TypeScript **must** set `tsconfig` (relative to that project) — type-aware linting needs it and the gate fails closed without it. A JS-only node project may omit it.
+- A `node` project containing TypeScript **must** set `tsconfig` (relative to that project) — type-aware linting needs it and the gate fails closed without it. This includes a project whose only TypeScript is inside a `.svelte` component (`<script lang="ts">`). A JS-only (or JS-only-Svelte) node project may omit it.
 - **No other fields.** The file is parsed with `deny_unknown_fields`; a hoped-for `exclude` / `ignore` / `skip` key is a hard error, not an escape hatch. There is no way to exempt code here — that is the point.
 - **The map must match reality.** Every adapter-backed file in the tree must be covered by a declared project, or the gate fails. `ansible` and `yaml` are opt-in markers — declare them to run at a sub-path.
 

@@ -36,10 +36,10 @@ jq -c '.honest_map.violations[]' grizzly-gate-report/report.json
 
 ## Honest-map violations (`class` → fix)
 
-- `malformed-declaration` — `gate-config.json` is missing, unparseable, wrong `version` (must be exactly `1`), declares zero projects, or a project that doesn't resolve (unknown language, missing marker, out-of-tree path, bad `tsconfig`). The `reason` names the exact project. Correct the declaration. Markers: `rust`→`Cargo.toml`, `python`→`pyproject.toml`, `node`→`package.json`, `ansible`→an `ansible` dir, `yaml`→a `.yamllint` file.
+- `malformed-declaration` — `gate-config.json` is missing, unparseable, wrong `version` (must be exactly `1`), declares zero projects, or a project that doesn't resolve (unknown language, missing marker, out-of-tree path, bad `tsconfig`). The `reason` names the exact project. Correct the declaration. Markers: `rust`→`Cargo.toml`, `python`→`pyproject.toml`, `go`→`go.mod`, `node`→`package.json` (also covers Svelte/React), `ansible`→an `ansible` dir, `yaml`→a `.yamllint` file.
 - `undeclared` — adapter-backed code (e.g. a `.py`) exists but no declared project covers it. Add a project for it in `gate-config.json`, or remove the code.
-- `unsupported` — code in a language with no adapter (Go, Ruby, Java, …). The gate cannot check it, so it cannot pass. Remove the code, or escalate to Ops to add an adapter (a deliberate two-part change — not something you do here).
-- `ts-without-tsconfig` — a node project contains TypeScript but declares no `tsconfig`. Add `"tsconfig": "<path>"` to that project.
+- `unsupported` — code in a language with no adapter (Ruby, Java, …). The gate cannot check it, so it cannot pass. Remove the code, or escalate to Ops to add an adapter (a deliberate two-part change — not something you do here).
+- `ts-without-tsconfig` — a node project contains TypeScript but declares no `tsconfig`. Add `"tsconfig": "<path>"` to that project. Also fires for a `.svelte` component using `<script lang="ts">`.
 
 ## Check failures
 

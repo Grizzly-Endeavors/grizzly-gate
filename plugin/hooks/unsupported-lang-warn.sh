@@ -26,11 +26,11 @@ case "$src" in startup | resume | clear) ;; *) exit 0 ;; esac
 files="$(git ls-files 2>/dev/null || true)"
 [ -n "$files" ] || exit 0
 
-# Common code languages with no gate adapter (supported: rust, python, node,
-# ansible, yaml). Keep in rough sync with config/detect.toml; the image is
-# authoritative.
+# Common code languages with no gate adapter (supported: rust, python, go, node
+# — incl. svelte/react under the node adapter — ansible, yaml). Keep in rough
+# sync with config/detect.toml; the image is authoritative.
 unsupported="$(printf '%s\n' "$files" \
-  | grep -iE '\.(go|rb|java|kt|kts|swift|php|cs|c|h|cc|cpp|cxx|hpp|hh|scala|ex|exs|clj|cljs|hs|pl|pm|lua|dart|zig|m|mm|groovy|erl)$' \
+  | grep -iE '\.(rb|java|kt|kts|swift|php|cs|c|h|cc|cpp|cxx|hpp|hh|scala|ex|exs|clj|cljs|hs|pl|pm|lua|dart|zig|m|mm|groovy|erl)$' \
   || true)"
 [ -n "$unsupported" ] || exit 0
 

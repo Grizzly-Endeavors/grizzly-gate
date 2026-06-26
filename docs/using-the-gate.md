@@ -33,14 +33,14 @@ A minimal copy-from starting point lives at [`gate-config.example.json`](../gate
 **Fields:**
 
 - `version` — must be exactly `1`. An unknown version fails closed rather than guessing at an older or newer shape.
-- `language` — one of the known adapters: `rust`, `python`, `node`, `ansible`, `yaml`. Any other name (including an un-adapted code language like `go` or `java`) is rejected — it has no checks to run.
-- `path` — the project directory, relative and in-tree (`.` is the repo root; `..` and absolute paths are rejected). The adapter's marker must exist there or the declaration is a lie of omission and fails. Markers: `rust` → `Cargo.toml`, `python` → `pyproject.toml`, `node` → `package.json`, `ansible` → an `ansible` directory, `yaml` → a `.yamllint` file.
-- `tsconfig` — **node only**, and required for any node project that contains TypeScript (type-aware linting needs the type program; the gate fails closed without it). The gate wraps your tsconfig so its module/path resolution is honored while gate strictness is force-overridden — you cannot weaken the type bar. A JS-only node project may omit it.
+- `language` — one of the known adapters: `rust`, `python`, `go`, `node`, `ansible`, `yaml`. Svelte and React ride the `node` adapter (a Svelte/React repo has a `package.json`), so declare them as `node`. Any other name (including an un-adapted code language like `ruby` or `java`) is rejected — it has no checks to run.
+- `path` — the project directory, relative and in-tree (`.` is the repo root; `..` and absolute paths are rejected). The adapter's marker must exist there or the declaration is a lie of omission and fails. Markers: `rust` → `Cargo.toml`, `python` → `pyproject.toml`, `go` → `go.mod`, `node` → `package.json`, `ansible` → an `ansible` directory, `yaml` → a `.yamllint` file.
+- `tsconfig` — **node only**, and required for any node project that contains TypeScript — including a `.svelte` component with `<script lang="ts">` (type-aware checking needs the type program; the gate fails closed without it). The gate wraps your tsconfig so its module/path resolution is honored while gate strictness is force-overridden — you cannot weaken the type bar. A JS-only node project may omit it.
 
 **Two sharp edges that trip people up:**
 
 - **No unknown fields.** The file is parsed with `deny_unknown_fields`. A hoped-for `exclude`, `ignore`, or `skip` key is a hard parse error, not a silently-ignored escape hatch. There is no way to exempt code from the gate in this file — that is the whole point.
-- **The map must match reality.** A separate, hostile tree walk (it does *not* honor your `.gitignore`) confirms the declaration. Any `.rs`/`.py`/TS/JS/etc. file not covered by a matching declared project fails the gate, and any code in an un-adapted language hard-fails. `ansible` and `yaml` are opt-in markers (a bare `.yml` is data as often as IaC) — declare them to run at a sub-path. Only an Ops-owned `skip_dirs` list (vendor/build/VCS dirs) is skipped.
+- **The map must match reality.** A separate, hostile tree walk (it does *not* honor your `.gitignore`) confirms the declaration. Any `.rs`/`.py`/`.go`/TS/JS/`.svelte`/etc. file not covered by a matching declared project fails the gate, and any code in an un-adapted language hard-fails. `ansible` and `yaml` are opt-in markers (a bare `.yml` is data as often as IaC) — declare them to run at a sub-path. Only an Ops-owned `skip_dirs` list (vendor/build/VCS dirs) is skipped.
 
 ## Fixing violations
 
@@ -50,8 +50,8 @@ When phase 1 fails, the gate prints every problem at once (no fix-one-rerun chur
 |---|---|---|
 | `malformed-declaration` | `gate-config.json` is missing, unparseable, the wrong `version`, declares zero projects, or a project that doesn't resolve (unknown language, missing marker, out-of-tree path, bad `tsconfig`). | Correct the declaration. The `reason` field names the exact project and problem. |
 | `undeclared` | Adapter-backed code (e.g. a `.py`) exists in the tree but no declared project covers it. | Add a project for it in `gate-config.json`, or remove the code. |
-| `unsupported` | Code in a language the gate has no adapter for (Go, Ruby, Java, …). | The gate cannot check it, so it cannot pass. Remove the code, or ask Ops to add an adapter (a deliberate two-part change — see [ADR-029](decisions/029-gate-config-honest-map.md)). |
-| `ts-without-tsconfig` | A node project contains TypeScript but declares no `tsconfig`. | Add `"tsconfig": "<path>"` to that project. |
+| `unsupported` | Code in a language the gate has no adapter for (Ruby, Java, …). | The gate cannot check it, so it cannot pass. Remove the code, or ask Ops to add an adapter (a deliberate two-part change — see [ADR-029](decisions/029-gate-config-honest-map.md)). |
+| `ts-without-tsconfig` | A node project contains TypeScript but declares no `tsconfig` (also fires for a `.svelte` component using `<script lang="ts">`). | Add `"tsconfig": "<path>"` to that project. |
 
 When phase 2 fails, the gate prints a `FAILURES` block replaying each failing check's output, then the verdict. The fix is whatever the tool says — and the full, untruncated output is always in the report (below).
 
