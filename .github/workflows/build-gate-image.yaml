@@ -16,6 +16,13 @@ name: Build CI Gate Image
 on:
   push:
     branches: [master]
+    # Doc-only changes don't affect the image — skip the rebuild. A release
+    # (or a forced rebuild) still goes through workflow_dispatch below.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".gitignore"
   workflow_dispatch:
     inputs:
       version:
