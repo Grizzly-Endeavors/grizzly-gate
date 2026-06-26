@@ -144,3 +144,14 @@ repos:
 grizzly-gate-report/
 .grizzly-gate.tsconfig.json
 ```
+
+## The Claude Code plugin
+
+If you work in these repos with Claude Code, the [`grizzly-gate` plugin](../plugin/README.md) wraps all of the above. Add this repo as a marketplace and install it:
+
+```
+/plugin marketplace add Grizzly-Endeavors/grizzly-gate
+/plugin install grizzly-gate@grizzly-endeavors
+```
+
+It adds `/grizzly-gate:onboard` (write a truthful `gate-config.json` and document the gate in a repo's `CLAUDE.md`), `/grizzly-gate:check` (the local pre-check above, on demand), a Sonnet `gate-fixer` agent that reads `report.json` and fixes violations, and opt-in guardrail hooks (block-push-on-failure, plus warnings for missing docker, un-adapted languages, and added lint suppressions). All it needs is `docker` on PATH. See the [plugin README](../plugin/README.md) for the full component and configuration list.

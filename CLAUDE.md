@@ -7,6 +7,7 @@ The CI gate for the [grizzly-platform](https://github.com/Grizzly-Endeavors/griz
 - `Dockerfile` — the single versioned artifact: the harness binary + every pinned adapter and scanner. **Tool versions are pinned here via `ARG` and are the single source of truth** — bump deliberately, never float a tag.
 - `config/` — the declarative rule tree the harness executes. One self-describing dir per tool: `languages/<lang>/` (adapter: `manifest.toml` + native config + `[detect]` block) and `util/<tool>/` (always-on scanners). `detect.toml` holds Ops-owned `skip_dirs` + the denylist of un-adapted code languages.
 - `harness/` — the Rust orchestration binary (`src/{main,config,detect,gateconfig}.rs`). Loads the config tree (fails closed on empty), verifies the repo's `gate-config.json` honest map against a hostile tree walk, runs adapters per declared project, then signs on a clean pass.
+- `plugin/` — a Claude Code plugin that wraps the local pre-check for the family: `/grizzly-gate:onboard` + `/grizzly-gate:check` skills, a Sonnet `gate-fixer` agent, and opt-in guardrail hooks (push-block, plus docker/un-adapted-language/suppression warnings). `bin/grizzly-gate` is the single source of truth for the local docker-run invocation — `scripts/grizzly-gate-local.sh` is a thin shim over it. `.claude-plugin/marketplace.json` at the repo root publishes it as the `grizzly-endeavors` marketplace. See `plugin/README.md`.
 
 ## Working in the harness
 
