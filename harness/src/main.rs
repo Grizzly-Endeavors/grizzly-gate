@@ -607,7 +607,11 @@ mod tests {
 
     #[test]
     fn tail_cap_keeps_only_the_tail_when_line_capped() {
-        let body = (0..20).map(|i| format!("line {i}\n")).collect::<String>();
+        use std::fmt::Write as _;
+        let mut body = String::new();
+        for i in 0..20 {
+            writeln!(body, "line {i}").unwrap();
+        }
         let (out, truncated) = tail_cap(&body, 3, 16 * 1024);
         assert!(truncated, "an over-long input is flagged truncated");
         assert!(
