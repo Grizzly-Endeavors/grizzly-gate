@@ -40,3 +40,7 @@ Two design forces, made explicit by the owner:
 - **License-allowlist denial is the noisiest knob.** Deny-by-default plus "non-standard ⇒ deny" will fail repos pulling deps with unrecognised or copyleft licenses. This is intentional but the most likely thing to tune; the allow-list and the unfixable-vuln stance are the two dials to relax first if it proves impractical for a given ecosystem (npm's transitive sprawl especially).
 - **Two new scan-time network dependencies** (OSV.dev, deps.dev). They are now in the gate's critical path; a fetch failure fails the build closed.
 - **Rust is double-covered** (cargo-deny + the two new scanners also read `Cargo.lock`). Harmless and additive for vulns; `cargo-deny` remains the authoritative Rust policy.
+
+## Correction (2026-06-26)
+
+The original allow-list above listed **`Apache-2.0 WITH LLVM-exception`**, but osv-scanner 2.4.0's `--licenses` flag accepts only plain SPDX license IDs and **errors out the entire scan** on any `<id> WITH <exception>` expression — which silently broke `scan:osv-scanner` for every repo. The `WITH LLVM-exception` entry has been removed from the manifest (plain `Apache-2.0` remains); see the note in `config/util/osv-scanner/manifest.toml`. Consequence: a dependency whose license is *exactly* the LLVM-exception form is now flagged (rare). If the fleet needs it back, it requires an osv-scanner mechanism that supports exception expressions, not a flag tweak.
