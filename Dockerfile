@@ -172,30 +172,12 @@ RUN case "$TARGETARCH" in arm64) GO_ARCH=arm64 ;; *) GO_ARCH=amd64 ;; esac \
     # amd64 leg is unaffected in behavior (and Kaniko builds the same file).
     && GOBIN=/usr/local/bin CGO_ENABLED=0 go install "golang.org/x/vuln/cmd/govulncheck@v${GOVULNCHECK_VERSION}"
 
-# Ship the gate's config tree (per-tool manifests + native configs), then vendor
-# a pinned Semgrep ruleset into the semgrep tool dir (offline, no registry fetch
-# at scan time) and warm the Trivy vuln DB so scans are reproducible at this
-# build's point.
-COPY config/ /etc/grizzly-gate/config/
-
-# Install the gate's Node lint toolchain into the node config dir, so the flat
-# config (`eslint.config.mjs`) resolves typescript-eslint, the React plugins, and
-# eslint-plugin-svelte from a node_modules beside it (and `.svelte` files get the
-# svelte-check typechecker). Pinned, exact versions — the Dockerfile ARGs are the
-# single source of truth (no committed package.json).
-RUN cd /etc/grizzly-gate/config/languages/node \
-    && npm init -y >/dev/null 2>&1 \
-    && npm install --no-fund --no-audit --save-exact \
-        "eslint@${ESLINT_VERSION}" \
-        "typescript@${TYPESCRIPT_VERSION}" \
-        "typescript-eslint@${TS_ESLINT_VERSION}" \
-        "eslint-plugin-react@${ESLINT_PLUGIN_REACT_VERSION}" \
-        "eslint-plugin-react-hooks@${ESLINT_PLUGIN_REACT_HOOKS_VERSION}" \
-        "eslint-plugin-svelte@${ESLINT_PLUGIN_SVELTE_VERSION}" \
-        "svelte-eslint-parser@${SVELTE_ESLINT_PARSER_VERSION}" \
-        "svelte@${SVELTE_VERSION}" \
-        "svelte-check@${SVELTE_CHECK_VERSION}"
-
+# Vendor a pinned Semgrep ruleset into the semgrep tool dir (offline, no registry
+# fetch at scan time) and warm the Trivy vuln DB. Both are independent of the
+# repo's config tree, so they run BEFORE `COPY config/` below — a config edit then
+# can't invalidate these expensive layers (a full ruleset clone + DB download).
+# `git clone` creates the leading dirs; the later `COPY config/` overlays the
+# semgrep manifest alongside the cloned rules/ (COPY merges, it does not delete).
 RUN SEMGREP_RULES=/etc/grizzly-gate/config/util/semgrep/rules \
     && git clone --depth 1 --branch "${SEMGREP_RULES_REF}" \
         https://github.com/semgrep/semgrep-rules "${SEMGREP_RULES}" \
@@ -208,6 +190,34 @@ RUN SEMGREP_RULES=/etc/grizzly-gate/config/util/semgrep/rules \
     && find "${SEMGREP_RULES}" -type f \( -name '*.yml' -o -name '*.yaml' \) \
         -exec sh -c 'grep -qE "^rules:" "$1" || rm -f "$1"' _ {} \; \
     && trivy image --download-db-only
+
+# Install the gate's Node lint toolchain into the node config dir, so the flat
+# config (`eslint.config.mjs`) resolves typescript-eslint, the React plugins, and
+# eslint-plugin-svelte from a node_modules beside it (and `.svelte` files get the
+# svelte-check typechecker). Pinned, exact versions — the Dockerfile ARGs are the
+# single source of truth (no committed package.json), so this layer depends ONLY
+# on those ARGs, not the config tree: it `mkdir`s the dir rather than relying on
+# `COPY config/`, so editing eslint.config.mjs or a manifest does not trigger a
+# (slow, emulated) npm reinstall. The later `COPY config/` overlays those files
+# beside the installed node_modules.
+RUN mkdir -p /etc/grizzly-gate/config/languages/node \
+    && cd /etc/grizzly-gate/config/languages/node \
+    && npm init -y >/dev/null 2>&1 \
+    && npm install --no-fund --no-audit --save-exact \
+        "eslint@${ESLINT_VERSION}" \
+        "typescript@${TYPESCRIPT_VERSION}" \
+        "typescript-eslint@${TS_ESLINT_VERSION}" \
+        "eslint-plugin-react@${ESLINT_PLUGIN_REACT_VERSION}" \
+        "eslint-plugin-react-hooks@${ESLINT_PLUGIN_REACT_HOOKS_VERSION}" \
+        "eslint-plugin-svelte@${ESLINT_PLUGIN_SVELTE_VERSION}" \
+        "svelte-eslint-parser@${SVELTE_ESLINT_PARSER_VERSION}" \
+        "svelte@${SVELTE_VERSION}" \
+        "svelte-check@${SVELTE_CHECK_VERSION}"
+
+# Ship the gate's config tree LAST among the heavy layers: this is the only one a
+# config edit invalidates, and it's a cheap file copy. It overlays onto the
+# already-installed node_modules and the vendored semgrep rules/ above.
+COPY config/ /etc/grizzly-gate/config/
 
 COPY --from=harness /usr/local/bin/grizzly-gate /usr/local/bin/grizzly-gate
 

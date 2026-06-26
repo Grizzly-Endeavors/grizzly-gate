@@ -27,6 +27,12 @@ SHA="$(git rev-parse --short HEAD)"
 PLATFORMS="linux/amd64,linux/arm64"
 BUILDER="grizzly-gate"
 LOCK_FILE=".git/grizzly-gate-publish.lock"
+# Durable layer cache (mode=max caches intermediate stages too). The
+# docker-container builder keeps an internal cache, but it can be GC'd or lost
+# when the builder is recreated; this on-disk cache survives that, so a publish
+# that only changed harness/ or config/ reuses the slow emulated tool-install
+# layers instead of rebuilding them under QEMU. Lives in .git (untracked).
+CACHE_DIR=".git/grizzly-gate-buildcache"
 
 # Serialize: if a publish is already in flight, don't start a second build.
 exec 9>"$LOCK_FILE"
@@ -58,6 +64,8 @@ echo "grizzly-gate: building+pushing ${IMAGE}:{latest,${SHA}} for ${PLATFORMS}"
 docker buildx build \
   --builder "$BUILDER" \
   --platform "$PLATFORMS" \
+  --cache-from "type=local,src=${CACHE_DIR}" \
+  --cache-to "type=local,dest=${CACHE_DIR},mode=max" \
   -t "${IMAGE}:latest" \
   -t "${IMAGE}:${SHA}" \
   --push \
