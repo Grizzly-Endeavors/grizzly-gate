@@ -44,3 +44,5 @@ jq -c '.honest_map.violations[]' grizzly-gate-report/report.json
 ## Check failures
 
 Phase 2 replays each failing check's full output in `.output`. The fix is whatever the tool says — clippy/eslint/ruff lints, type errors, failing tests, SAST (semgrep) findings, secrets (gitleaks), dependency CVEs (osv-scanner). Fix the underlying code or, for a CVE, bump the dependency. For a genuinely-wrong lint in a specific spot, use a scoped suppression with a written reason (`#[expect(..., reason = "...")]` or the language equivalent) — never a blanket allow.
+
+A `python:deps` failure (or a `node:deps`/`npm ci` failure) means the repo's *declared dependencies don't install* — the gate installs them so mypy/pytest can resolve real types and imports. Fix the repo's dependency manifest (`requirements.txt`/`pyproject.toml`/lockfile) so the install succeeds; never strip the dep or skip the step. If a Python repo's first-party imports still fail after a clean install, the repo is a loose tree that needs either proper packaging (`[project]`/`[build-system]` in `pyproject.toml`) or a rootdir-importable layout.

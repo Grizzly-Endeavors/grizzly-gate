@@ -31,8 +31,9 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   fi
 fi
 
-# Mount the working tree read-write and run from it: the node tsconfig wrapper
-# and the report dir are written into the tree (both gitignorable). No
+# Mount the working tree read-write and run from it: the node tsconfig wrapper,
+# the per-project deps install (node_modules / Python .venv), and the report dir
+# are written into the tree (all gitignorable). No
 # --sign/--image — a local pre-check verifies the honest map + every source
 # check and writes grizzly-gate-report/report.json, but never signs.
 exec docker run --rm \

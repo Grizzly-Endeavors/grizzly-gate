@@ -9,6 +9,15 @@
 scan:
   scanners:
     - vuln
+  # Exclude the gate-created Python venv. The Python adapter's `deps` check builds
+  # `.venv` and installs the repo's deps PLUS the gate-injected pytest into it.
+  # Trivy's installed-package analyzer would otherwise scan that venv and falsely
+  # attribute a CVE in the gate's OWN pytest toolchain to the scanned repo. No
+  # real coverage is lost — the repo's committed manifests/lockfiles are still
+  # scanned directly (here and by osv-scanner). See ADR-032.
+  skip-dirs:
+    - .venv
+    - venv
 severity:
   - UNKNOWN
   - LOW

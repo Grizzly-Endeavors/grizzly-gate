@@ -58,6 +58,10 @@ ARG SEMGREP_VERSION=1.168.0
 ARG RUFF_VERSION=0.15.20
 ARG MYPY_VERSION=2.1.0
 ARG PYTEST_VERSION=9.1.1
+# uv: the Python adapter's deps installer (ADR-032). Used via its pip interface
+# against a repo's standard requirements.txt/pyproject — a scanned repo never has
+# to adopt uv. Pinned like every other tool.
+ARG UV_VERSION=0.11.24
 ARG ANSIBLE_LINT_VERSION=26.4.0
 # ansible-lint needs ansible-core>=2.16.14; pin it exactly for determinism.
 # Capped at the 2.19.x line: ansible-core 2.20+ requires Python >=3.12, but this
@@ -131,14 +135,23 @@ RUN case "$TARGETARCH" in arm64) NODE_ARCH=arm64 ;; *) NODE_ARCH=x64 ;; esac \
 # Python tooling — each CLI in its own isolated venv via pipx, so their
 # transitive deps can't conflict (semgrep and ansible-lint are not
 # co-installable in one environment). pipx entrypoints land in /usr/local/bin.
+# uv (the Python adapter's deps installer, ADR-032) goes in here too. Its env:
+#   GATE_PYTEST_VERSION single-sources the pytest pin to the adapter's deps check
+#     (it installs pytest into the repo's .venv, where pytest must run in-process).
+#   UV_PYTHON_PREFERENCE/DOWNLOADS force uv onto the image's pinned Python 3.11
+#     (no network CPython download) so the gate venv matches mypy python_version.
 ENV PIPX_HOME=/opt/pipx \
-    PIPX_BIN_DIR=/usr/local/bin
+    PIPX_BIN_DIR=/usr/local/bin \
+    GATE_PYTEST_VERSION=${PYTEST_VERSION} \
+    UV_PYTHON_PREFERENCE=only-system \
+    UV_PYTHON_DOWNLOADS=never
 RUN pip install --no-cache-dir --break-system-packages pipx \
     && pipx install "semgrep==${SEMGREP_VERSION}" \
     && pipx inject --force semgrep "setuptools<81" \
     && pipx install "ruff==${RUFF_VERSION}" \
     && pipx install "mypy==${MYPY_VERSION}" \
     && pipx install "pytest==${PYTEST_VERSION}" \
+    && pipx install "uv==${UV_VERSION}" \
     && pipx install "ansible-lint==${ANSIBLE_LINT_VERSION}" \
     && pipx inject --force ansible-lint "ansible-core==${ANSIBLE_CORE_VERSION}" \
     && pipx install "yamllint==${YAMLLINT_VERSION}"

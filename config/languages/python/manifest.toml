@@ -10,14 +10,34 @@ marker = "pyproject.toml"
 extensions = ["py", "pyi"]
 shebangs = ["python", "python3"]
 
+# Install the repo's deps into a per-project `.venv` BEFORE mypy/pytest run — the
+# Node `npm ci` analog. Without this, third-party imports resolve to `Any` (mypy
+# strict cascades) and the repo's own package isn't importable (pytest collection
+# fails). uv is a gate-side installer detail using its pip interface against the
+# repo's STANDARD inputs (requirements.txt / pyproject) — a repo never has to
+# adopt uv. Hybrid first-party resolution: editable-install when the repo is a
+# package (`[project]`/`[build-system]`), else install requirements.txt and let
+# `pythonpath = .` (gate pytest.ini) resolve first-party code by rootdir. pytest
+# is installed INTO the venv (it must run in-process with the deps; no
+# `--python-executable` flag like mypy) at the Dockerfile-pinned version, exposed
+# as $GATE_PYTEST_VERSION so the pin stays single-sourced. `.venv` is in
+# detect.toml skip_dirs (honest-map-safe) and excluded from trivy-fs. See ADR-032.
+[[checks]]
+name = "deps"
+cmd = "sh -c 'set -eu; uv venv .venv; if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi; if grep -qE \"^\\[(project|build-system)\\]\" pyproject.toml; then uv pip install -e .; fi; uv pip install \"pytest==$GATE_PYTEST_VERSION\"'"
+
 [[checks]]
 name = "ruff"
 cmd = "ruff check --config {config}/ruff.toml ."
 
 [[checks]]
 name = "mypy"
-cmd = "mypy --config-file {config}/mypy.ini ."
+# --python-executable points mypy's import resolution at the repo's installed
+# deps (in .venv) while mypy itself runs from its own pinned pipx venv.
+cmd = "mypy --config-file {config}/mypy.ini --python-executable .venv/bin/python ."
 
 [[checks]]
 name = "pytest"
-cmd = "pytest -c {config}/pytest.ini -q"
+# Run from the venv so the repo's installed package + third-party deps import;
+# the gate pytest.ini (pythonpath = .) covers the loose-layout case.
+cmd = ".venv/bin/pytest -c {config}/pytest.ini -q"
