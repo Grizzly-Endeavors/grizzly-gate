@@ -17,6 +17,14 @@
 # LLVM-exception` is NOT listed; plain `Apache-2.0` is. A dependency whose license
 # is exactly the LLVM-exception form is therefore flagged — rare; escalate to Ops
 # if a fleet dependency legitimately needs it.
+#
+# The allowlist is standard-permissive only (deny-by-default holds). It was
+# widened after a real run flagged near-universal permissive licenses that should
+# never have blocked a build: PSF-2.0 (the Python license — typing-extensions and
+# much of the CPython stdlib-adjacent ecosystem; gates nearly every Python repo
+# without it), Python-2.0 (its older variant), 0BSD (zero-clause BSD, tslib), and
+# BlueOak-1.0.0 (modern permissive, minimatch). All are OSI/permissive with no
+# copyleft or notice-propagation burden beyond what BSD/MIT already carry.
 name = "osv-scanner"
 scope = "source"
-cmd = 'osv-scanner scan source -r --allow-no-lockfiles --licenses="MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,Zlib,Unicode-3.0,Unicode-DFS-2016,MPL-2.0" {source}'
+cmd = 'osv-scanner scan source -r --allow-no-lockfiles --licenses="MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,Zlib,Unicode-3.0,Unicode-DFS-2016,MPL-2.0,PSF-2.0,Python-2.0,0BSD,BlueOak-1.0.0" {source}'

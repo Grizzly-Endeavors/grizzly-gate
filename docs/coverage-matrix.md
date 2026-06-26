@@ -4,7 +4,7 @@ The skim-friendly companion to [coverage.md](coverage.md). That doc explains *wh
 
 **Legend:** ✅ enforced and blocking · ⚠️ partial or conditional (see note) · — not covered / not applicable. "Blocking" means a violation fails the gate, so the image is never signed.
 
-A note on the language columns: **Rust / Python / Go / TypeScript / JavaScript** are adapter-backed code languages. **React** (`.jsx`/`.tsx`) and **Svelte** (`.svelte`) are not separate columns — they ride the node adapter (TS/JS), with React-hooks and svelte-check rows called out in §3. **Ansible / YAML** are opt-in config-language adapters (activated by an `ansible/` dir and a `.yamllint` marker respectively). Code in a language with *no* adapter (Ruby, Java, …) does not "get scanned and pass" — the honest-map walk **fails the gate closed** so it can never ship. The only un-adapted things that ride through are non-code files and anything under the Ops-owned `skip_dirs`, and those still get the always-on secret + SAST + SCA scanners below.
+A note on the language columns: **Rust / Python / Go / TypeScript / JavaScript** are adapter-backed code languages. **React** (`.jsx`/`.tsx`) and **Svelte** (`.svelte`) are not separate columns — they ride the node adapter (TS/JS), with React-hooks and svelte-check rows called out in §4. **Ansible / YAML** are opt-in config-language adapters (activated by an `ansible/` dir and a `.yamllint` marker respectively). Code in a language with *no* adapter (Ruby, Java, …) does not "get scanned and pass" — the honest-map walk **fails the gate closed** so it can never ship. The only un-adapted things that ride through are non-code files and anything under the Ops-owned `skip_dirs`, and those still get the always-on secret + SAST + SCA scanners below.
 
 ## 1. Always-on source scanners (every repo, every language)
 
@@ -17,13 +17,31 @@ These run on every invocation regardless of which adapters fire — they are the
 | Unsafe deserialization (pickle/yaml.load/etc.) | semgrep | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | |
 | Weak / broken crypto (MD5, SHA1, ECB, hardcoded IV) | semgrep | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | |
 | SSRF / path traversal / XXE | semgrep | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | |
-| `eval`/`exec` on untrusted input | semgrep | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | Also caught by in-language linters (§3) |
+| `eval`/`exec` on untrusted input | semgrep | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | Also caught by in-language linters (§4) |
 | Disabled TLS / cert verification | semgrep | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | |
 | Insecure temp-file creation | semgrep | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | |
 
 The semgrep ruleset is vendored offline, so these verdicts are reproducible within a gate tag. ⚠️ on Ansible/YAML reflects that semgrep's SAST rules mostly target code languages — config files are covered only where a matching rule exists.
 
-## 2. Dependency & supply-chain matrix
+## 2. AI / LLM application-security matrix (every repo, always-on)
+
+The gate is the control plane for AI-generated code and the family ships AI apps, so the semgrep ruleset's `ai/ai-best-practices/` set (~100 rules, all `category: security`) is first-class and runs on every invocation as part of the always-on semgrep pass. All cells are blocking (`semgrep --error`) and reproducible (ruleset vendored offline). These check **how** an app uses an LLM — distinct from "this repo uses AI," which the gate deliberately does *not* flag (see the note below).
+
+| Threat class | Rules (`ai/ai-best-practices/`) | Targets | Notes |
+|---|---|---|---|
+| LLM output → code execution (model-controlled RCE) | `llm-output-to-exec`, `langchain-dangerous-exec` | Python, JS | Highest-severity LLM bug class — a model response reaching `exec`/`eval`/a shell |
+| Prompt injection via untrusted system prompt | `*-user-input-in-system-prompt` | OpenAI/Anthropic/Gemini/Cohere/Mistral · Py/JS | User-controlled data concatenated into the system prompt — root of most jailbreak chains |
+| MCP server: command injection / SSRF | `mcp-command-injection`, `mcp-ssrf` | generic | The gate ships its own MCP server; every family MCP tool held to this |
+| MCP server: credential / data leakage | `mcp-credential-in-response`, `mcp-unsanitized-return`, `mcp-hardcoded-config-secret`, `mcp-tool-poisoning` | generic | |
+| Claude Code hooks abuse (RCE / exfiltration) | `hooks-wget-pipe-bash`, `hooks-dns-exfiltration`, `hooks-sensitive-file-access`, `hooks-path-traversal`, `hooks-no-input-validation`, `hooks-unquoted-variable`, `hooks-unconditional-allow`, `hooks-relative-script-path` | bash / Python (hooks) | This repo ships hooks — the exact ways one becomes a code-exec/exfil vector |
+| Agent / settings over-authority | `claude-settings-bypass-permissions`, `claude-settings-env-url-override`, `claude-settings-auto-enable-mcp`, `agent-unbounded-loop`, `ide-settings-executable-path` | config / generic | Config that silently widens agent authority or lets it spin unbounded |
+| Hidden-unicode instruction injection | `ai-config-hidden-unicode` | AI config / prompt files | Invisible/bidi unicode smuggled into instructions |
+| Hardcoded LLM API keys | per-provider `*-hardcoded-api-key`, `llm-api-key-in-source` | Py/JS/Go/Java/Ruby | Provider-specific complement to the always-on gitleaks scan |
+| Missing LLM safety controls (robustness) | `*-missing-moderation`, `*-missing-refusal-check`, `*-missing-safety-settings`, `*-missing-max-tokens`, `*-no-error-handling` | per provider · Py/JS | Best-practice/robustness — still blocking under `--error` |
+
+**Not flagged, by design:** the ruleset's *other* `ai/` half — 25 *shadow-AI inventory* rules (`ai/**/detect-*`, `category: maintainability`, severity `INFO`) that merely detect a repo *uses* an AI SDK (one even matches the literal strings `claude`/`anthropic` in any file) — is **dropped at image-build**. Under `--error` they would fail every legitimate AI-using repo and this repo's own docs. Detecting *that* AI is present is not a security signal; the rows above (how it's used) are. See [coverage.md](coverage.md) §AI / LLM application security.
+
+## 3. Dependency & supply-chain matrix
 
 SCA reads **committed lockfiles** and fetches **fresh** advisory/license data at scan time (so a newly-disclosed CVE fails a previously-green build); it fails closed if data can't be fetched. A repo with no lockfile gets no dependency resolution to scan (`--allow-no-lockfiles` lets a depless repo pass cleanly).
 
@@ -31,7 +49,7 @@ SCA reads **committed lockfiles** and fetches **fresh** advisory/license data at
 |---|---|:--:|:--:|:--:|:--:|:--:|---|
 | Known-vulnerable dependency (CVE) — source | osv-scanner + trivy-fs | ✅ | ✅ | ✅ | ✅ | ⚠️ | All severities incl. unfixable; npm/PyPI/Go/Maven/RubyGems/Cargo/…; two DBs for union coverage. ⚠️ = only if the config repo commits a lockfile |
 | Reachable dependency vuln (call-graph) | govulncheck | — | — | ✅ | — | — | Go-only; reachability-filtered, fresh DB at scan time; complements the lockfile-based osv-scanner/trivy-fs |
-| Disallowed dependency license (copyleft/unknown) | osv-scanner | ✅ | ✅ | ✅ | ✅ | ⚠️ | Deny-by-default allowlist (MIT/Apache/BSD/ISC/Zlib/Unicode/MPL-2.0); unmapped/`non-standard` license is denied |
+| Disallowed dependency license (copyleft/unknown) | osv-scanner | ✅ | ✅ | ✅ | ✅ | ⚠️ | Deny-by-default allowlist (MIT/Apache/BSD/ISC/Zlib/Unicode/MPL-2.0 + permissive PSF-2.0/Python-2.0/0BSD/BlueOak-1.0.0); unmapped/`non-standard` license is denied |
 | Untrusted registry / git source | cargo-deny | ✅ | — | — | — | — | Rust-only; allowlist restricted to crates.io. **No Go/npm/PyPI equivalent** |
 | Wildcard version requirement | cargo-deny | ✅ | — | — | — | — | Rust-only (`wildcards = "deny"`) |
 | Unmaintained / yanked dependency | cargo-deny | ✅ | — | — | — | — | Rust-only (RUSTSEC unmaintained, `yanked = "deny"`) |
@@ -39,7 +57,7 @@ SCA reads **committed lockfiles** and fetches **fresh** advisory/license data at
 
 The image-scope row applies to whatever the built container actually contains, independent of language. The biggest asymmetry to remember: **dependency-source gating (registry/git/wildcard/unmaintained) is Rust-only** — Go gets reachability-aware vuln scanning (govulncheck) on top of the cross-ecosystem lockfile SCA, but no source-trust gate.
 
-## 3. Per-language code analysis matrix
+## 4. Per-language code analysis matrix
 
 This is the adapter layer — what each language's linter/typechecker/test step enforces. Columns are blank (—) where the language has no such concept or no step.
 
@@ -68,7 +86,7 @@ Notes:
 - **Tests:** Rust, Python, and Go run the existing suite (a failing suite fails the gate); the node adapter has no test step. None of them *mandate* that meaningful tests exist — see the gaps list in [coverage.md](coverage.md#what-the-gate-does-not-prevent-gaps--non-goals).
 - **Config forcing:** every cell above runs against the gate's own config, force-injected; the scanned repo's `.clippy.toml`/`ruff.toml`/`tsconfig.json`/`.yamllint`/`deny.toml`/etc. are ignored, so a repo cannot relax any of these by editing its own config.
 
-## 4. What no column covers
+## 5. What no column covers
 
 These hold for every language — a green gate does **not** promise them. Full detail in [coverage.md](coverage.md#what-the-gate-does-not-prevent-gaps--non-goals).
 

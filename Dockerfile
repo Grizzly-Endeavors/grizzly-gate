@@ -202,6 +202,19 @@ RUN SEMGREP_RULES=/etc/grizzly-gate/config/util/semgrep/rules \
     # change on the (unpinned) ref can't silently reintroduce a breaking file.
     && find "${SEMGREP_RULES}" -type f \( -name '*.yml' -o -name '*.yaml' \) \
         -exec sh -c 'grep -qE "^rules:" "$1" || rm -f "$1"' _ {} \; \
+    # Drop the "shadow AI" inventory rules under ai/ — 25 detection rules that
+    # merely flag a repo USES an AI SDK (langchain/openai/anthropic/…), plus a
+    # generic-language rule matching the literal strings "claude"/"anthropic" in
+    # ANY file. They are severity INFO / `category: maintainability`, not security
+    # findings, and `semgrep --error` fails on ANY finding — so they would block
+    # every legitimate AI-using repo in the family (which builds AI apps) and even
+    # this repo's own Claude-mentioning docs. The ai/ai-best-practices/ SECURITY
+    # rules (prompt injection, llm-output-to-exec, MCP SSRF/command-injection,
+    # hardcoded keys, hidden-unicode, …) are `category: security` and KEPT.
+    # Content-based (the maintainability category is unique to the inventory set
+    # within ai/) so an upstream rename can't silently reintroduce one.
+    && find "${SEMGREP_RULES}" -type f -path '*/ai/*' \( -name '*.yml' -o -name '*.yaml' \) \
+        -exec sh -c 'if grep -q "category: maintainability" "$1"; then rm -f "$1"; fi' _ {} \; \
     && trivy image --download-db-only
 
 # Install the gate's Node lint toolchain into the node config dir, so the flat
