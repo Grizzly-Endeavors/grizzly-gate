@@ -33,9 +33,12 @@ cmd = "npm ci"
 [[checks]]
 name = "eslint"
 # Type-aware rules need the TS program; GATE_TSCONFIG hands the flat config the
-# same wrapped tsconfig tsc uses. Gate-owned binary so the toolchain is fixed.
+# same wrapped tsconfig tsc uses. GATE_SKIP_DIRS hands it the Ops-owned skip_dirs
+# so eslint ignores the same generated/vendor dirs the honest-map walk does
+# (build/dist/.svelte-kit/…) — ESLint 9 flat config does not auto-ignore those.
+# Gate-owned binary so the toolchain is fixed.
 cmd = "{config}/node_modules/.bin/eslint --config {config}/eslint.config.mjs --no-config-lookup --no-error-on-unmatched-pattern ."
-env = { GATE_TSCONFIG = "{tsconfig}" }
+env = { GATE_TSCONFIG = "{tsconfig}", GATE_SKIP_DIRS = "{skip_dirs}" }
 
 [[checks]]
 name = "tsc"
