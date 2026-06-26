@@ -9,11 +9,13 @@
 mod config;
 mod detect;
 mod gateconfig;
+mod report;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use config::Scope;
 use gateconfig::ResolvedProject;
+use report::Report;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -56,12 +58,44 @@ struct Cli {
     /// in-cluster zot is HTTP-only).
     #[arg(long)]
     insecure_registry: bool,
+
+    /// Directory for the machine-readable run report (`report.json`). Written on
+    /// every run; holds the full untruncated output of every check.
+    #[arg(long, default_value = "./grizzly-gate-report")]
+    report_dir: PathBuf,
 }
 
 struct StepResult {
     label: String,
+    /// Language adapter this step belongs to (`None` for repo-wide scanners).
+    language: Option<String>,
+    /// Project path the step ran in (`None` for repo-wide scanners).
+    project: Option<String>,
+    /// The rendered command line that ran (placeholders already substituted).
+    cmd: String,
     ok: bool,
+    /// Process exit code, or `None` if the tool could not be spawned/parsed.
+    exit_code: Option<i32>,
     secs: f64,
+    /// Full, untruncated combined stdout+stderr — the durable record copied
+    /// verbatim into `report.json`.
+    output: String,
+}
+
+impl StepResult {
+    /// Build the report row for this step.
+    fn to_report(&self) -> report::Check {
+        report::Check {
+            label: self.label.clone(),
+            language: self.language.clone(),
+            project: self.project.clone(),
+            cmd: self.cmd.clone(),
+            ok: self.ok,
+            exit_code: self.exit_code,
+            duration_secs: self.secs,
+            output: self.output.clone(),
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -85,12 +119,19 @@ fn main() -> Result<()> {
         println!("grizzly-gate :: image {image}");
     }
 
-    // --- Honest map: required declaration, then independent verification -----
-    // The repo must ship a gate-config.json that truthfully maps its layout, and
-    // the tree must contain no undeclared or unsupported code. Both are fatal
-    // (fail closed) and happen before any check runs — a repo that lies about
-    // (or omits) its contents never reaches the checks, let alone signing.
-    let projects = gateconfig::load(&source, &tree)?;
+    let mut report = Report::new();
+
+    // --- Phase 1 — Honest map: required declaration, then independent
+    // verification. The repo must ship a gate-config.json that truthfully maps
+    // its layout, and the tree must contain no undeclared or unsupported code.
+    // Phase 1 must pass *completely* before Phase 2 runs — a repo that lies
+    // about (or omits) its contents never reaches the checks, let alone signing.
+    // Each stage reports *all* of its problems at once (no first-failure churn).
+    println!("\n── Phase 1: honest map ──");
+    let projects = match gateconfig::load(&source, &tree) {
+        Ok(projects) => projects,
+        Err(failure) => return fail_phase1(&mut report, failure, &cli.report_dir),
+    };
     println!(
         "grizzly-gate :: gate-config.json declares {} project(s)",
         projects.len()
@@ -103,10 +144,20 @@ fn main() -> Result<()> {
         };
         println!("grizzly-gate ::   - {} @ {where_}", p.language);
     }
-    detect::verify(&source, &tree, &projects).context("honest-map verification")?;
+    if let Err(failure) = detect::verify(&source, &tree, &projects) {
+        return fail_phase1(&mut report, failure, &cli.report_dir);
+    }
     println!("grizzly-gate :: honest-map verification passed");
 
+    // --- Phase 2 — Checks. Every adapter check and scanner runs; none of them
+    // short-circuit the run, so the verdict reflects every failure at once.
+    println!("\n── Phase 2: checks ──");
     let results = run_checks(&tree, &source, cli.image.as_deref(), &projects)?;
+    if results.is_empty() {
+        bail!("gate ran zero checks — refusing to pass (fail closed)");
+    }
+    report.set_checks(results.iter().map(StepResult::to_report).collect());
+    let report_path = report.write(&cli.report_dir)?;
 
     // --- Verdict -----------------------------------------------------------
     println!("\n────────────────────────── gate summary ──────────────────────────");
@@ -118,15 +169,17 @@ fn main() -> Result<()> {
             failed += 1;
         }
     }
-    if results.is_empty() {
-        bail!("gate ran zero checks — refusing to pass (fail closed)");
-    }
     println!("───────────────────────────────────────────────────────────────────");
 
     if failed > 0 {
+        print_failures(&results, &report, &report_path);
         bail!("gate FAILED: {failed}/{} checks failed", results.len());
     }
     println!("gate PASSED: {}/{} checks", results.len(), results.len());
+    println!(
+        "grizzly-gate :: report written to {}",
+        report_path.display()
+    );
 
     // --- Sign on pass ------------------------------------------------------
     if cli.sign {
@@ -143,6 +196,86 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Record a phase-1 honest-map failure to the report, print the rich human
+/// message, point at the report, and fail closed. Phase 2 never runs.
+fn fail_phase1(
+    report: &mut Report,
+    failure: report::HonestMapFailure,
+    report_dir: &Path,
+) -> Result<()> {
+    let report::HonestMapFailure {
+        message,
+        violations,
+    } = failure;
+    report.fail_honest_map(violations);
+    // The report is a best-effort artifact here; a write failure must not mask
+    // the actual honest-map failure, so surface it as a warning and continue.
+    match report.write(report_dir) {
+        Ok(path) => println!(
+            "\ngrizzly-gate :: honest-map violations recorded to {} \
+             (query: jq -c '.honest_map.violations[]' {})",
+            path.display(),
+            path.display()
+        ),
+        Err(e) => eprintln!("grizzly-gate :: warning: could not write report: {e:#}"),
+    }
+    bail!("{message}")
+}
+
+/// Maximum tail of a failing check's output replayed in the FAILURES block. The
+/// full, untruncated output always remains in report.json — this cap only keeps
+/// a pathological tool from flooding the terminal verdict.
+const FAILURE_TAIL_LINES: usize = 200;
+const FAILURE_TAIL_BYTES: usize = 16 * 1024;
+
+/// Replay each failing check's output (tail-capped) under the verdict, so the
+/// actionable detail sits with the result instead of scrolled away. Always
+/// points at the full report and the `jq` query for the complete output.
+fn print_failures(results: &[StepResult], report: &Report, report_path: &Path) {
+    println!("\n──────────────────────────── FAILURES ────────────────────────────");
+    for r in results.iter().filter(|r| !r.ok) {
+        println!("\n▼ {}", r.label);
+        let (tail, truncated) = tail_cap(&r.output, FAILURE_TAIL_LINES, FAILURE_TAIL_BYTES);
+        print!("{tail}");
+        if !tail.is_empty() && !tail.ends_with('\n') {
+            println!();
+        }
+        if truncated {
+            println!(
+                "… output truncated — full output in {} (query: jq -r '.checks[] | \
+                 select(.label==\"{}\") | .output' {}); or re-run locally (scripts/grizzly-gate-local.sh).",
+                report_path.display(),
+                r.label,
+                report_path.display()
+            );
+        }
+    }
+    println!("───────────────────────────────────────────────────────────────────");
+    println!("\ngrizzly-gate :: full report at {}", report_path.display());
+    for hint in report.query_hints() {
+        println!("grizzly-gate ::   {hint}");
+    }
+}
+
+/// Return the last `max_lines`/`max_bytes` of `s` (whichever bound bites first)
+/// plus whether anything was dropped. Splits on a char boundary so the slice is
+/// always valid UTF-8.
+fn tail_cap(s: &str, max_lines: usize, max_bytes: usize) -> (String, bool) {
+    // Byte bound: keep the trailing `max_bytes`, advanced to a char boundary.
+    let mut start = s.len().saturating_sub(max_bytes);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    // Line bound: keep the trailing `max_lines` lines from there.
+    let line_start = s
+        .match_indices('\n')
+        .rev()
+        .nth(max_lines)
+        .map_or(0, |(i, _)| i + 1);
+    let cut = start.max(line_start);
+    (s.get(cut..).unwrap_or_default().to_string(), cut > 0)
 }
 
 /// Placeholder substitutions for a command line and its env values: each
@@ -204,13 +337,16 @@ fn run_checks(
             tsconfig: ts.as_ref().map(|t| t.arg.as_str()),
         };
         for check in &adapter.checks {
-            results.push(run(
+            let mut result = run(
                 &format!("{}:{}", adapter.name, check.name),
                 &check.cmd,
                 &project.abs_path,
                 subst,
                 &check.env,
-            ));
+            );
+            result.language = Some(adapter.name.clone());
+            result.project = Some(where_.clone());
+            results.push(result);
         }
         if let Some(t) = ts {
             t.cleanup();
@@ -354,11 +490,17 @@ fn run(
 
     let parts = shlex::split(&rendered).unwrap_or_default();
     let Some((program, args)) = parts.split_first() else {
-        eprintln!("   ! could not parse command: {rendered}");
+        let msg = format!("could not parse command: {rendered}");
+        eprintln!("   ! {msg}");
         return StepResult {
             label: label.into(),
+            language: None,
+            project: None,
+            cmd: rendered,
             ok: false,
+            exit_code: None,
             secs: 0.0,
+            output: msg,
         };
     };
 
@@ -368,20 +510,39 @@ fn run(
     for (k, v) in env {
         command.env(k, apply(v));
     }
-    let status = command.status();
+    // Capture-only: collect the tool's combined output rather than streaming it,
+    // so the full text can be replayed in the FAILURES block and written
+    // verbatim to report.json. Checks run sequentially, so printing each one's
+    // captured output as it finishes preserves the same per-check ordering a
+    // live stream would have shown.
+    let output = command.output();
     let secs = start.elapsed().as_secs_f64();
 
-    let ok = match status {
-        Ok(s) => s.success(),
+    let (ok, exit_code, captured) = match output {
+        Ok(o) => {
+            let mut buf = String::from_utf8_lossy(&o.stdout).into_owned();
+            buf.push_str(&String::from_utf8_lossy(&o.stderr));
+            print!("{buf}");
+            if !buf.is_empty() && !buf.ends_with('\n') {
+                println!();
+            }
+            (o.status.success(), o.status.code(), buf)
+        }
         Err(e) => {
-            eprintln!("   ! failed to spawn {program}: {e}");
-            false
+            let msg = format!("failed to spawn {program}: {e}");
+            eprintln!("   ! {msg}");
+            (false, None, msg)
         }
     };
     StepResult {
         label: label.into(),
+        language: None,
+        project: None,
+        cmd: rendered,
         ok,
+        exit_code,
         secs,
+        output: captured,
     }
 }
 
@@ -404,4 +565,54 @@ fn sign_image(image: &str, key: &str, insecure: bool) -> Result<()> {
         bail!("cosign sign failed for {image}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NO_SUBST: Subst<'static> = Subst {
+        source: None,
+        image: None,
+        config: None,
+        tsconfig: None,
+    };
+
+    #[test]
+    fn run_captures_failing_tool_output() {
+        let env = BTreeMap::new();
+        let r = run(
+            "t:fail",
+            "sh -c 'echo boom >&2; exit 3'",
+            Path::new("."),
+            NO_SUBST,
+            &env,
+        );
+        assert!(!r.ok, "a non-zero exit must mark the step failed");
+        assert!(
+            r.output.contains("boom"),
+            "the tool's real output is captured: {:?}",
+            r.output
+        );
+        assert_eq!(r.exit_code, Some(3), "the exit code is recorded");
+    }
+
+    #[test]
+    fn tail_cap_returns_whole_small_input_untruncated() {
+        let body = "line one\nline two\n";
+        let (out, truncated) = tail_cap(body, 200, 16 * 1024);
+        assert_eq!(out, body, "small input is returned whole");
+        assert!(!truncated, "nothing dropped from a small input");
+    }
+
+    #[test]
+    fn tail_cap_keeps_only_the_tail_when_line_capped() {
+        let body = (0..20).map(|i| format!("line {i}\n")).collect::<String>();
+        let (out, truncated) = tail_cap(&body, 3, 16 * 1024);
+        assert!(truncated, "an over-long input is flagged truncated");
+        assert!(
+            out.contains("line 19") && !out.contains("line 0\n"),
+            "only the trailing lines are kept: {out:?}"
+        );
+    }
 }

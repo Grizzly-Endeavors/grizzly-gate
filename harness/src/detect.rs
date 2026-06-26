@@ -20,11 +20,11 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
 use walkdir::WalkDir;
 
 use crate::config::Tree;
 use crate::gateconfig::ResolvedProject;
+use crate::report::{HonestMapFailure, Violation, ViolationClass};
 
 /// How a single file was classified by the detection ruleset.
 enum Hit {
@@ -35,8 +35,14 @@ enum Hit {
 }
 
 /// Walk `source`, classify every file, and fail closed on undeclared or
-/// unsupported code. `projects` is the already-validated declaration.
-pub fn verify(source: &Path, tree: &Tree, projects: &[ResolvedProject]) -> Result<()> {
+/// unsupported code. `projects` is the already-validated declaration. On
+/// failure, returns a [`HonestMapFailure`] carrying both the rich human message
+/// and the structured violations for `report.json`.
+pub fn verify(
+    source: &Path,
+    tree: &Tree,
+    projects: &[ResolvedProject],
+) -> std::result::Result<(), HonestMapFailure> {
     // Pre-index extension/shebang → language for O(1) lookups. A later rule
     // never shadows an earlier one; adapters are indexed before the unsupported
     // denylist so a supported language can't be mis-flagged.
@@ -74,7 +80,10 @@ pub fn verify(source: &Path, tree: &Tree, projects: &[ResolvedProject]) -> Resul
 
     let walker = WalkDir::new(source).follow_links(false).into_iter();
     for entry in walker.filter_entry(|e| !is_skipped_dir(e, source, &tree.detect.skip_dirs)) {
-        let entry = entry?;
+        // A walk error means we cannot establish what's actually in the tree —
+        // fail closed rather than pass on a partial view.
+        let entry =
+            entry.map_err(|e| HonestMapFailure::whole(format!("walking source tree: {e}")))?;
         if !entry.file_type().is_file() {
             continue;
         }
@@ -106,19 +115,36 @@ pub fn verify(source: &Path, tree: &Tree, projects: &[ResolvedProject]) -> Resul
     if unsupported.is_empty() && undeclared.is_empty() && ts_without_config.is_empty() {
         return Ok(());
     }
+    Err(build_failure(unsupported, undeclared, &ts_without_config))
+}
 
-    // Build one combined, deterministic error so an operator sees every problem
-    // at once rather than fixing them one gate run at a time. Each section is
-    // assembled by joining its (deduplicated, sorted) lines, then folded into a
-    // single message — no incremental String mutation.
+/// Fold the three violation classes into one [`HonestMapFailure`]: the rich
+/// human message *and* the structured violations, both built from the same
+/// (deduplicated, sorted, capped) lists so they never disagree. Called only
+/// when at least one list is non-empty.
+fn build_failure(
+    mut unsupported: Vec<(String, PathBuf)>,
+    mut undeclared: Vec<(String, PathBuf)>,
+    ts_without_config: &std::collections::BTreeSet<PathBuf>,
+) -> HonestMapFailure {
     unsupported.sort();
     undeclared.sort();
+    let unsupported = dedup_head(&unsupported);
+    let undeclared = dedup_head(&undeclared);
+
+    let mut violations: Vec<Violation> = Vec::new();
     let mut sections: Vec<String> = vec!["honest-map verification failed (fail closed):".into()];
     if !unsupported.is_empty() {
         sections.push(format!(
             "  Unsupported languages (gate has no adapter — cannot be gated):\n{}",
             render_violations(&unsupported)
         ));
+        violations.extend(unsupported.iter().map(|(lang, p)| Violation {
+            class: ViolationClass::Unsupported,
+            language: Some(lang.clone()),
+            path: Some(p.display().to_string()),
+            reason: format!("{lang} code present but the gate has no adapter for it"),
+        }));
     }
     if !undeclared.is_empty() {
         sections.push(format!(
@@ -128,18 +154,17 @@ pub fn verify(source: &Path, tree: &Tree, projects: &[ResolvedProject]) -> Resul
             render_violations(&undeclared),
             crate::gateconfig::FILE,
         ));
+        violations.extend(undeclared.iter().map(|(lang, p)| Violation {
+            class: ViolationClass::Undeclared,
+            language: Some(lang.clone()),
+            path: Some(p.display().to_string()),
+            reason: format!("{lang} code not covered by any declared project"),
+        }));
     }
     if !ts_without_config.is_empty() {
         let lines = ts_without_config
             .iter()
-            .map(|p| {
-                let where_ = if p.as_os_str().is_empty() {
-                    ".".to_string()
-                } else {
-                    p.display().to_string()
-                };
-                format!("    [node] {where_}")
-            })
+            .map(|p| format!("    [node] {}", display_rel(p)))
             .collect::<Vec<_>>()
             .join("\n");
         sections.push(format!(
@@ -148,8 +173,26 @@ pub fn verify(source: &Path, tree: &Tree, projects: &[ResolvedProject]) -> Resul
              in {}.",
             crate::gateconfig::FILE,
         ));
+        violations.extend(ts_without_config.iter().map(|p| Violation {
+            class: ViolationClass::TsWithoutTsconfig,
+            language: Some("node".to_string()),
+            path: Some(display_rel(p)),
+            reason: "node project contains TypeScript but declares no tsconfig".to_string(),
+        }));
     }
-    bail!(sections.join("\n\n"))
+    HonestMapFailure {
+        message: sections.join("\n\n"),
+        violations,
+    }
+}
+
+/// Render a project-relative path for display: `"."` for the repo root.
+fn display_rel(p: &Path) -> String {
+    if p.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        p.display().to_string()
+    }
 }
 
 /// TypeScript source extensions (a subset of the node adapter's extensions).
@@ -217,7 +260,7 @@ fn clone_hit(hit: &Hit) -> Hit {
 /// `#!/usr/bin/env python3` → `python3`; `#!/usr/bin/ruby` → `ruby`. Reads only
 /// the first 256 bytes and never errors out the walk (unreadable → `None`).
 fn read_shebang_interpreter(path: &Path) -> Option<String> {
-    let mut buf = [0u8; 256];
+    let mut buf = [0_u8; 256];
     let mut f = std::fs::File::open(path).ok()?;
     let n = f.read(&mut buf).ok()?;
     let head = buf.get(..n)?;
