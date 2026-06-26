@@ -1,0 +1,11 @@
+# Keep the build context lean: the image builds the harness from source inside
+# the builder stage, so local build artifacts and run output must not be shipped.
+harness/target/
+grizzly-gate-report/
+.grizzly-gate.tsconfig.json
+.git/
+.github/
+**/*.md
+!README.md
+CLAUDE.local.md
+.claude/

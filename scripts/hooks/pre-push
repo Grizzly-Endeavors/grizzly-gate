@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# pre-push hook: publish the gate image to Docker Hub for local-dev distribution.
+#
+# It runs the build+push in the BACKGROUND and always exits 0, so a multi-minute
+# docker build never blocks or fails your `git push`. Progress/result lands in
+# the log printed below.
+#
+# Activate per-machine (opt-in, so only maintainers publish) by symlinking it
+# into .git/hooks — leaves the rest of .git/hooks alone (pre-commit-framework
+# friendly, unlike core.hooksPath):
+#     ln -sf ../../scripts/hooks/pre-push .git/hooks/pre-push
+# Skip a single push:   GRIZZLY_GATE_NO_PUBLISH=1 git push
+# Deactivate entirely:  rm .git/hooks/pre-push
+set -euo pipefail
+
+if [ "${GRIZZLY_GATE_NO_PUBLISH:-}" = "1" ]; then
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+LOG="$ROOT/.git/grizzly-gate-publish.log"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "grizzly-gate: docker not found; skipping image publish." >&2
+  exit 0
+fi
+
+echo "grizzly-gate: image build+push started in background → $LOG"
+nohup bash "$ROOT/scripts/publish-image.sh" >"$LOG" 2>&1 &
+disown 2>/dev/null || true
+exit 0

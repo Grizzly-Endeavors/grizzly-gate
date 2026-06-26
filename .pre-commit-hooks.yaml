@@ -1,20 +1,21 @@
 # grizzly-gate pre-commit hook. A consuming repo can wire the full gate into its
 # pre-commit (or pre-push) so code is checked before it reaches CI.
 #
-# This `docker_image` hook runs the gate image directly; it needs the image
-# available under the tag in `entry`. Until the image is published to a registry
-# your machine can pull from, build it locally and keep the `:local` tag:
-#     docker build -t grizzly-gate:local <path-to-grizzly-gate>
-# pre-commit mounts the repo at /src and runs from there, so the harness writes
-# its report to grizzly-gate-report/report.json in the repo root (gitignore it).
+# This `docker_image` hook runs the published gate image directly — pre-commit
+# pulls it for you. pre-commit mounts the repo at /src and runs from there, so
+# the harness writes its report to grizzly-gate-report/report.json in the repo
+# root (gitignore it).
 #
-# For a setup that works today without a published image, use the `repo: local`
-# wrapper snippet in docs/using-the-gate.md instead — it calls
-# scripts/grizzly-gate-local.sh.
+# Consume it from another repo's .pre-commit-config.yaml with:
+#     - repo: https://github.com/grizzly-endeavors/grizzly-gate
+#       rev: <tag>
+#       hooks: [ { id: grizzly-gate } ]
+# To test local changes to the gate itself, override the image by using the
+# `repo: local` wrapper snippet in docs/using-the-gate.md instead.
 - id: grizzly-gate
   name: grizzly-gate (full gate pre-check)
   description: Honest-map check + every per-language and SAST/secret/dependency check. No signing, no image scan.
-  entry: grizzly-gate:local --source /src
+  entry: bearflinn/grizzly-gate:latest --source /src
   language: docker_image
   pass_filenames: false
   always_run: true

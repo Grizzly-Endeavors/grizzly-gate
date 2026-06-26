@@ -6,23 +6,29 @@
 # — the honest-map check and every per-language + SAST/secret/dependency check —
 # runs identically.
 #
-# Build the image once (from the grizzly-gate repo root):
-#     docker build -t grizzly-gate:local .
-# Then, from the root of the repo you want to check:
+# From the root of the repo you want to check:
 #     /path/to/scripts/grizzly-gate-local.sh
+# The default image is pulled from Docker Hub on first run — no build needed.
 #
-# Override the image (e.g. a published, pinned tag) with GRIZZLY_GATE_IMAGE.
+# Override the image with GRIZZLY_GATE_IMAGE (e.g. a pinned tag, or a
+# locally-built `grizzly-gate:local` when testing changes to the gate itself).
 # Extra args are forwarded to the harness (e.g. --report-dir <dir>); do not pass
 # --sign, it has no signing material here.
 set -euo pipefail
 
-IMAGE="${GRIZZLY_GATE_IMAGE:-grizzly-gate:local}"
+IMAGE="${GRIZZLY_GATE_IMAGE:-bearflinn/grizzly-gate:latest}"
 
+# Pull on demand if the image isn't already present (a published tag just works;
+# a local-only tag like grizzly-gate:local won't pull, which is the signal to
+# build it first).
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "grizzly-gate: image '$IMAGE' not found locally." >&2
-  echo "  build it:  docker build -t grizzly-gate:local <path-to-grizzly-gate>" >&2
-  echo "  or set GRIZZLY_GATE_IMAGE to a reachable tag." >&2
-  exit 1
+  echo "grizzly-gate: pulling $IMAGE …" >&2
+  if ! docker pull "$IMAGE"; then
+    echo "grizzly-gate: could not get image '$IMAGE'." >&2
+    echo "  for a local source build:  docker build -t grizzly-gate:local <path-to-grizzly-gate>" >&2
+    echo "  then:  GRIZZLY_GATE_IMAGE=grizzly-gate:local $0" >&2
+    exit 1
+  fi
 fi
 
 # Mount the working tree read-write and run from it: the node tsconfig wrapper

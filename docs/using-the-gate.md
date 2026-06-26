@@ -95,26 +95,36 @@ In CI, archive `grizzly-gate-report/report.json` as a build artifact so the comp
 
 You don't need the full CI + signing flow to check your code — run the exact gate image against your working tree first. A local run does **everything CI does except** cosign signing and image-layer (CVE/SBOM) scanning, which need a built image and signing material. The honest-map check and every per-language + SAST/secret/dependency check run identically, because it's the same image.
 
-**1. Build the image once** (from a checkout of this repo):
+The image is published to Docker Hub as **`bearflinn/grizzly-gate:latest`** — no build required; `docker pull`s happen on demand.
+
+**Run it directly** from the root of the repo you want to check:
 
 ```sh
-docker build -t grizzly-gate:local .
+docker run --rm -v "$PWD:/src" -w /src bearflinn/grizzly-gate:latest --source /src
 ```
 
-(Once the image is published to a registry your machine can pull from, skip this and set `GRIZZLY_GATE_IMAGE` to that tag instead.)
-
-**2. Run it** from the root of the repo you want to check:
+Or use the wrapper, which does the same and forwards extra args:
 
 ```sh
 /path/to/grizzly-gate/scripts/grizzly-gate-local.sh
 ```
 
-The wrapper mounts your working tree, runs the gate with no `--sign`/`--image`, and writes `grizzly-gate-report/report.json`. It exits non-zero on failure, so it composes into your own pre-commit or CI.
+Either way the gate runs with no `--sign`/`--image`, writes `grizzly-gate-report/report.json`, and exits non-zero on failure, so it composes into your own pre-commit or CI.
 
-**3. Wire it into pre-commit** (works today with the locally-built image):
+**Wire it into pre-commit** — the simplest path consumes this repo's hooks directly (pre-commit pulls the image for you):
 
 ```yaml
 # .pre-commit-config.yaml in your repo
+repos:
+  - repo: https://github.com/grizzly-endeavors/grizzly-gate
+    rev: <tag>          # pin to a released tag
+    hooks:
+      - id: grizzly-gate
+```
+
+If you'd rather call the wrapper script (e.g. to pin the image via `GRIZZLY_GATE_IMAGE`), use a `repo: local` hook instead:
+
+```yaml
 repos:
   - repo: local
     hooks:
@@ -126,7 +136,7 @@ repos:
         always_run: true
 ```
 
-(Once the image is published, you can instead consume this repo's hosted [`.pre-commit-hooks.yaml`](../.pre-commit-hooks.yaml) via a `repo:`/`rev:` entry.)
+**Building from source instead** (only needed if you're changing the gate itself): `docker build -t grizzly-gate:local .` from this repo, then run with `GRIZZLY_GATE_IMAGE=grizzly-gate:local`.
 
 **Gitignore the run artifacts.** A local run transiently creates `.grizzly-gate.tsconfig.json` in a node project (cleaned up after the run) and writes `grizzly-gate-report/`:
 

@@ -29,6 +29,8 @@ This repo holds the source; the **image is built in-cluster by grizzly-platform*
 - **Cut a release:** `workflow_dispatch` with `version=vX.Y.Z`. Apps pin via `gate_version` on the reusable `gate.yaml` workflow.
 - Runs on the org's self-hosted `lab-runners` (ARC), which reach the in-cluster Argo server.
 
+**Dev-distribution image (Docker Hub).** Separately from the authoritative in-cluster build, a convenience image is published to `bearflinn/grizzly-gate:{latest,<sha>}` so local developers can pull and run the gate as a pre-check (`scripts/grizzly-gate-local.sh`, `docs/using-the-gate.md`). This image **signs nothing** — it's for local pre-checks only. Maintainers publish it with `scripts/publish-image.sh`; activate the automatic on-push publish per-machine with `ln -sf ../../scripts/hooks/pre-push .git/hooks/pre-push` (backgrounded, never blocks `git push`; skip one push with `GRIZZLY_GATE_NO_PUBLISH=1`). Requires `docker login` to the target repo.
+
 ## Changing the rules
 
 Edit the relevant tool dir under `config/`, bump pins in the `Dockerfile` if needed, update `docs/coverage.md` in the same change, then cut a new tag. The gate's config is **authoritative** — it is force-injected onto each tool and ignores the scanned repo's own config of the same kind. Adding a language is a deliberate two-part change: a new adapter under `languages/` **and** its detection rules (`[detect]` block + removal from the `detect.toml` denylist). See [ADR-029](docs/decisions/029-gate-config-honest-map.md).
