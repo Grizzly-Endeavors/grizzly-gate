@@ -138,4 +138,5 @@ None of these are required to adopt the *pattern* — the six principles port to
 ## Further reading
 
 - [Coverage & threat model](docs/coverage.md) — exactly what failure modes and vulnerability classes the gate prevents, per tool, plus the gaps it doesn't.
+- [Coverage matrix](docs/coverage-matrix.md) — the same coverage as an at-a-glance grid: skim a threat class (SQL injection, strict typing, vulnerable deps) against each supported language.
 - ADRs — the *why*: [028 centralized gate](docs/decisions/028-centralized-ci-gate.md), [029 honest map](docs/decisions/029-gate-config-honest-map.md), [030 cross-ecosystem SCA](docs/decisions/030-cross-ecosystem-sca.md).

@@ -1,6 +1,6 @@
 # CI Gate — Coverage & Threat Model
 
-What the `grizzly-gate` image actually prevents, given the configs currently in `config/`. This is the threat-coverage companion to the [design overview](../README.md) and the [operator runbook](https://github.com/Grizzly-Endeavors/grizzly-platform/blob/master/docs/runbooks/ci-gate.md). Every claim here is traceable to a specific manifest, lint level, or scanner config in the tree — when the config changes, this doc must change with it.
+What the `grizzly-gate` image actually prevents, given the configs currently in `config/`. This is the threat-coverage companion to the [design overview](../README.md) and the [operator runbook](https://github.com/Grizzly-Endeavors/grizzly-platform/blob/master/docs/runbooks/ci-gate.md). For an at-a-glance grid of the same coverage — threat class × language — see the [coverage matrix](coverage-matrix.md). Every claim here is traceable to a specific manifest, lint level, or scanner config in the tree — when the config changes, this doc must change with it.
 
 The gate is the reviewer: a green gate is what lets an agent (or a human) ship without a second pair of eyes on the diff. So the question this doc answers is "what can no longer reach production unnoticed?" — broken into the structural guarantees that hold regardless of language, then the per-tool coverage, then an honest list of what the gate does *not* catch.
 
