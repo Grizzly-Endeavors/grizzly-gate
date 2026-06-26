@@ -40,7 +40,7 @@ Every app repo hand-rolled its own CI. Lint/test steps drifted between repos, se
 
 2. **It runs against CI's output, not a repo it ingests.** CI already cloned and built. A "service that takes a repo" would re-do that work in a stateful, bottlenecked box. The gate runs against the source tree and the built image that CI hands it.
 
-3. **Rules are data, and the config is the gate's.** The harness (a small Rust binary) executes a declarative `config/` tree — one self-describing dir per tool under `languages/` (`Cargo.toml` → `cargo fmt`/`clippy -D warnings`/`deny`/`test`; `pyproject.toml` → `ruff`/`mypy`/`pytest`; …) and `util/` (gitleaks, a Semgrep ruleset, Trivy for image SBOM/CVEs, and cross-ecosystem dependency SCA via osv-scanner + Trivy fs). Each dir carries a `manifest.toml` (what to run) next to the tool's own native config; the manifest forces that gate-owned config onto the tool (via `--config`/`--config-file`/`CLIPPY_CONF_DIR`/…), so a repo's own config **cannot weaken the checks** — the gate is the reviewer, not the repo. It fails closed: zero checks run ⇒ fail.
+3. **Rules are data, and the config is the gate's.** The harness (a small Rust binary) executes a declarative `config/` tree — one self-describing dir per tool under `languages/` (`Cargo.toml` → `cargo fmt`/`clippy -D warnings`/`deny`/`test`; `pyproject.toml` → `ruff`/`mypy`/`pytest`; `go.mod` → `golangci-lint`/`govulncheck`/`go test`; …) and `util/` (gitleaks, a Semgrep ruleset, Trivy for image SBOM/CVEs, and cross-ecosystem dependency SCA via osv-scanner + Trivy fs). Each dir carries a `manifest.toml` (what to run) next to the tool's own native config; the manifest forces that gate-owned config onto the tool (via `--config`/`--config-file`/`CLIPPY_CONF_DIR`/…), so a repo's own config **cannot weaken the checks** — the gate is the reviewer, not the repo. It fails closed: zero checks run ⇒ fail.
 
 4. **A pass produces a signature, and the signature is the only proof that travels forward.** On a clean pass the gate cosign-signs the image *digest*. This decouples "the checks ran" from "this is allowed to deploy" — the signature is portable proof that survives all the way to the cluster.
 
@@ -80,11 +80,11 @@ Every gated repo ships this file at its root. It declares *where* each project l
 }
 ```
 
-- `language` — a known adapter: `rust`, `python`, `node`, `ansible`, `yaml`.
-- `path` — the project directory, relative and in-tree (`.` is the root). The adapter's marker (`Cargo.toml`, `pyproject.toml`, `package.json`, `ansible/`, `.yamllint`) must exist there, or it's a declared-but-empty lie and fails.
-- `tsconfig` — node only: the repo's own tsconfig. The gate wraps it so its module/path resolution is honored (for both project-aware `tsc` *and* type-aware eslint) while the gate force-overrides strictness — the repo cannot weaken the type bar. **Required for any node project containing TypeScript** (type-aware linting needs the type program; the gate fails closed without it); a JS-only project may omit it.
+- `language` — a known adapter: `rust`, `python`, `go`, `node`, `ansible`, `yaml`. Svelte and React are not separate languages — they ride the `node` adapter (a Svelte/React repo has a `package.json`), and `.svelte`/`.jsx`/`.tsx` get svelte-check + react-hooks rules automatically.
+- `path` — the project directory, relative and in-tree (`.` is the root). The adapter's marker (`Cargo.toml`, `pyproject.toml`, `go.mod`, `package.json`, `ansible/`, `.yamllint`) must exist there, or it's a declared-but-empty lie and fails.
+- `tsconfig` — node only: the repo's own tsconfig. The gate wraps it so its module/path resolution is honored (for project-aware `tsc`, type-aware eslint, *and* `svelte-check`) while the gate force-overrides strictness — the repo cannot weaken the type bar. **Required for any node project containing TypeScript** — including a `.svelte` component with `<script lang="ts">` (type-aware checking needs the type program; the gate fails closed without it); a JS-only project may omit it.
 
-The harness then verifies the map: any `.rs`/`.py`/TS/JS file not covered by a matching declared project fails the gate, and any code in an un-adapted language (Go, Ruby, …) hard-fails — the only fix is Ops adding an adapter. `ansible` and `yaml` stay opt-in markers (a bare `.yml` is data as often as IaC), but can be declared to run at a sub-path.
+The harness then verifies the map: any `.rs`/`.py`/`.go`/TS/JS/`.svelte` file not covered by a matching declared project fails the gate, and any code in an un-adapted language (Ruby, Java, …) hard-fails — the only fix is Ops adding an adapter. `ansible` and `yaml` stay opt-in markers (a bare `.yml` is data as often as IaC), but can be declared to run at a sub-path.
 
 ## How a repo uses it
 

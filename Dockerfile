@@ -39,14 +39,32 @@ ARG TYPESCRIPT_VERSION=5.7.2
 # typescript-eslint (parser + plugin) for type-aware TS linting. 8.18.x is the
 # line that supports TypeScript 5.7 and ESLint 9.
 ARG TS_ESLINT_VERSION=8.18.2
+# React + Svelte eslint toolchain, installed into the node config dir alongside
+# the TS stack (all peer-compatible with ESLint 9). React: rules-of-hooks + the
+# recommended correctness set. Svelte: eslint-plugin-svelte (needs the parser) +
+# svelte + svelte-check (the `.svelte` type-aware checker, the tsc analog).
+ARG ESLINT_PLUGIN_REACT_VERSION=7.37.5
+ARG ESLINT_PLUGIN_REACT_HOOKS_VERSION=7.1.1
+ARG ESLINT_PLUGIN_SVELTE_VERSION=3.20.0
+ARG SVELTE_ESLINT_PARSER_VERSION=1.8.0
+ARG SVELTE_VERSION=5.56.4
+ARG SVELTE_CHECK_VERSION=4.7.1
+# Go toolchain + golangci-lint (the clippy-grade lint/format floor) + govulncheck
+# (reachability-aware dependency vuln scan).
+ARG GO_VERSION=1.26.4
+ARG GOLANGCI_LINT_VERSION=2.12.2
+ARG GOVULNCHECK_VERSION=1.5.0
 # semgrep-rules has its own ref scheme (not aligned to the semgrep CLI version);
 # its default branch is `develop`. TODO: pin to a commit SHA for reproducibility.
 ARG SEMGREP_RULES_REF=develop
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PATH=/usr/local/cargo/bin:/usr/local/node/bin:/usr/local/bin:$PATH \
+    PATH=/usr/local/go/bin:/usr/local/cargo/bin:/usr/local/node/bin:/usr/local/bin:$PATH \
     RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo
+    CARGO_HOME=/usr/local/cargo \
+    # GOTOOLCHAIN=local pins to the toolchain installed below — a scanned repo's
+    # go.mod `toolchain` directive can't pull a different Go (gate determinism).
+    GOTOOLCHAIN=local
 
 # Base OS deps + shellcheck (apt-pinned to the bookworm release).
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -97,6 +115,16 @@ RUN curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_V
     && curl -fsSL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
         -o /usr/local/bin/osv-scanner && chmod +x /usr/local/bin/osv-scanner
 
+# Go toolchain (drives `go test` + govulncheck's package loading), golangci-lint
+# (prebuilt v2 release — the lint/format floor), and govulncheck (`go install`ed
+# to /usr/local/bin so it lands on PATH). Go is on PATH via the ENV block above.
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+        | tar -xz -C /usr/local \
+    && curl -fsSL "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz" \
+        | tar -xz -C /tmp \
+    && mv "/tmp/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint" /usr/local/bin/golangci-lint \
+    && GOBIN=/usr/local/bin go install "golang.org/x/vuln/cmd/govulncheck@v${GOVULNCHECK_VERSION}"
+
 # Ship the gate's config tree (per-tool manifests + native configs), then vendor
 # a pinned Semgrep ruleset into the semgrep tool dir (offline, no registry fetch
 # at scan time) and warm the Trivy vuln DB so scans are reproducible at this
@@ -104,15 +132,22 @@ RUN curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_V
 COPY config/ /etc/grizzly-gate/config/
 
 # Install the gate's Node lint toolchain into the node config dir, so the flat
-# config (`eslint.config.mjs`) resolves typescript-eslint from a node_modules
-# beside it and TS files get type-aware linting. Pinned, exact versions — the
-# Dockerfile ARGs are the single source of truth (no committed package.json).
+# config (`eslint.config.mjs`) resolves typescript-eslint, the React plugins, and
+# eslint-plugin-svelte from a node_modules beside it (and `.svelte` files get the
+# svelte-check typechecker). Pinned, exact versions — the Dockerfile ARGs are the
+# single source of truth (no committed package.json).
 RUN cd /etc/grizzly-gate/config/languages/node \
     && npm init -y >/dev/null 2>&1 \
     && npm install --no-fund --no-audit --save-exact \
         "eslint@${ESLINT_VERSION}" \
         "typescript@${TYPESCRIPT_VERSION}" \
-        "typescript-eslint@${TS_ESLINT_VERSION}"
+        "typescript-eslint@${TS_ESLINT_VERSION}" \
+        "eslint-plugin-react@${ESLINT_PLUGIN_REACT_VERSION}" \
+        "eslint-plugin-react-hooks@${ESLINT_PLUGIN_REACT_HOOKS_VERSION}" \
+        "eslint-plugin-svelte@${ESLINT_PLUGIN_SVELTE_VERSION}" \
+        "svelte-eslint-parser@${SVELTE_ESLINT_PARSER_VERSION}" \
+        "svelte@${SVELTE_VERSION}" \
+        "svelte-check@${SVELTE_CHECK_VERSION}"
 
 RUN SEMGREP_RULES=/etc/grizzly-gate/config/util/semgrep/rules \
     && git clone --depth 1 --branch "${SEMGREP_RULES_REF}" \

@@ -102,7 +102,12 @@ pub fn verify(
             Some(Hit::Adapter(lang)) => match covering(&rel, &lang, projects) {
                 None => undeclared.push((lang, rel)),
                 Some(p) => {
-                    if lang == "node" && is_typescript(&rel) && p.tsconfig.is_none() {
+                    // A node project needs a declared tsconfig if it contains
+                    // TypeScript — either a standalone `.ts`/`.tsx` file or a
+                    // `.svelte` component whose `<script>` uses `lang="ts"`. Both
+                    // need the TS program for type-aware checking (tsc / svelte-check).
+                    let has_ts = is_typescript(&rel) || (is_svelte(&rel) && svelte_uses_ts(path));
+                    if lang == "node" && has_ts && p.tsconfig.is_none() {
                         ts_without_config.insert(p.rel_path.clone());
                     }
                 }
@@ -201,6 +206,41 @@ fn is_typescript(rel: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .is_some_and(|e| matches!(e.as_str(), "ts" | "tsx" | "mts" | "cts"))
+}
+
+/// Whether `rel` is a Svelte single-file component (`.svelte`).
+fn is_svelte(rel: &Path) -> bool {
+    rel.extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|e| e == "svelte")
+}
+
+/// Whether a `.svelte` component declares a TypeScript `<script>` block. Such a
+/// component needs the TS program (svelte-check) just like a standalone `.ts`
+/// file, so it makes its node project require a declared tsconfig. Components are
+/// small, so the whole file is read; an unreadable file is treated as not-TS (the
+/// lint/check steps surface a genuinely broken file).
+fn svelte_uses_ts(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|c| svelte_script_is_ts(&c))
+}
+
+/// Scan component source for a `<script ... lang="ts">` (or `'ts'`/`typescript`)
+/// opening tag, tolerant of attribute order and `context="module"`. Uses only
+/// iterator methods (no slicing) to stay within the gate's own lint floor.
+fn svelte_script_is_ts(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    lower.split("<script").skip(1).any(|seg| {
+        let tag: String = seg
+            .chars()
+            .take_while(|&c| c != '>')
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        tag.contains("lang=\"ts\"")
+            || tag.contains("lang='ts'")
+            || tag.contains("lang=\"typescript\"")
+            || tag.contains("lang='typescript'")
+    })
 }
 
 /// Render a sorted violation list to `    [lang] path` lines, capped via
@@ -356,7 +396,7 @@ mod tests {
                     marker: "package.json".into(),
                     config_dir: PathBuf::from("/x"),
                     detect: Detect {
-                        extensions: vec!["ts".into(), "tsx".into(), "js".into()],
+                        extensions: vec!["ts".into(), "tsx".into(), "js".into(), "svelte".into()],
                         shebangs: vec!["node".into()],
                     },
                     checks: vec![],
@@ -497,5 +537,68 @@ mod tests {
         let projects = vec![proj("node", "")];
         assert!(verify(&root, &tree(), &projects).is_ok());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn svelte_ts_component_without_tsconfig_fails() {
+        let root = scratch("svelte-ts-no-cfg");
+        std::fs::create_dir_all(&root).unwrap();
+        // A .svelte component with a TypeScript <script> needs the TS program.
+        std::fs::write(
+            root.join("App.svelte"),
+            "<script lang=\"ts\">\n  export let n: number = 0;\n</script>\n",
+        )
+        .unwrap();
+        let projects = vec![proj("node", "")];
+        let err = verify(&root, &tree(), &projects).unwrap_err().to_string();
+        assert!(err.contains("tsconfig") && err.contains("[node]"), "{err}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn svelte_ts_component_with_tsconfig_passes() {
+        let root = scratch("svelte-ts-cfg");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("App.svelte"),
+            "<script context=\"module\" lang='ts'>\n  export const x: string = \"\";\n</script>\n",
+        )
+        .unwrap();
+        let projects = vec![ResolvedProject {
+            language: "node".into(),
+            rel_path: PathBuf::new(),
+            abs_path: PathBuf::from("/unused"),
+            tsconfig: Some(PathBuf::from("/unused/tsconfig.json")),
+        }];
+        assert!(verify(&root, &tree(), &projects).is_ok());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plain_svelte_component_needs_no_tsconfig() {
+        let root = scratch("svelte-plain");
+        std::fs::create_dir_all(&root).unwrap();
+        // No `lang="ts"`: a JS-script component does not require a tsconfig.
+        std::fs::write(
+            root.join("App.svelte"),
+            "<script>\n  export let n = 0;\n</script>\n<p>{n}</p>\n",
+        )
+        .unwrap();
+        let projects = vec![proj("node", "")];
+        assert!(verify(&root, &tree(), &projects).is_ok());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn svelte_script_ts_detection() {
+        assert!(svelte_script_is_ts("<script lang=\"ts\">let x;</script>"));
+        assert!(svelte_script_is_ts(
+            "<script   lang = 'ts' >let x;</script>"
+        ));
+        assert!(svelte_script_is_ts(
+            "<script context=\"module\" lang=\"typescript\">x</script>"
+        ));
+        assert!(!svelte_script_is_ts("<script>let x;</script>"));
+        assert!(!svelte_script_is_ts("<p>lang=\"ts\" in markup only</p>"));
     }
 }

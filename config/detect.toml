@@ -40,10 +40,6 @@ skip_dirs = [
 # interpreter basename of an extensionless script (`#!/usr/bin/env ruby`).
 
 [[unsupported]]
-name = "go"
-extensions = ["go"]
-
-[[unsupported]]
 name = "ruby"
 extensions = ["rb", "rake", "gemspec"]
 shebangs = ["ruby"]

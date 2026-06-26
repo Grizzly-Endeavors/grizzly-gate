@@ -3,12 +3,13 @@
 # suppression — blanket or scoped — so nothing slips past unseen.
 #
 # Two classes, different stance:
-#   [blanket]  #[allow], bare # noqa / # type: ignore, @ts-ignore, eslint-disable.
-#              Forbidden — the gate fails closed on these. Must be removed.
+#   [blanket]  #[allow], bare # noqa / # type: ignore, @ts-ignore, eslint-disable,
+#              bare //nolint. Forbidden — the gate fails closed on these. Must be
+#              removed.
 #   [scoped]   reasoned forms the gate tolerates: Rust #[expect(..., reason=)],
-#              Python # noqa: CODE / # type: ignore[code], TS @ts-expect-error.
-#              Still surfaced, because the right default is a code fix, not a
-#              suppression.
+#              Python # noqa: CODE / # type: ignore[code], TS @ts-expect-error,
+#              Go //nolint:<linter>. Still surfaced, because the right default is
+#              a code fix, not a suppression.
 #
 # This is an advisory nudge: it does not revert the edit. It tells the user a
 # suppression landed, and tells Claude to refactor rather than suppress and to
@@ -45,9 +46,17 @@ case "$file" in
     blanket="$(printf '%s\n' "$added" | grep -nE '#[[:space:]]*(noqa([[:space:]]*$|[^:])|type:[[:space:]]*ignore([[:space:]]*$|[^[])|pylint:[[:space:]]*disable|ruff:[[:space:]]*noqa([[:space:]]*$|[^:])|mypy:[[:space:]]*ignore)' || true)"
     scoped="$(printf '%s\n' "$added" | grep -nE '#[[:space:]]*(noqa:[[:space:]]*[A-Z]|type:[[:space:]]*ignore\[)' || true)"
     ;;
-  *.ts | *.tsx | *.js | *.jsx | *.mjs | *.cjs)
+  *.ts | *.tsx | *.js | *.jsx | *.mjs | *.cjs | *.svelte)
     blanket="$(printf '%s\n' "$added" | grep -nE 'eslint-disable|@ts-ignore|@ts-nocheck' || true)"
     scoped="$(printf '%s\n' "$added" | grep -nE '@ts-expect-error' || true)"
+    ;;
+  *.go)
+    # golangci-lint nolint directives. A bare //nolint (no specific linter named)
+    # is blanket; //nolint:<linter> is scoped. The gate additionally requires an
+    # explanation (nolintlint require-explanation), so even the scoped form is
+    # surfaced — a code fix is the right default.
+    blanket="$(printf '%s\n' "$added" | grep -nE '//[[:space:]]*nolint([[:space:]]|$)' || true)"
+    scoped="$(printf '%s\n' "$added" | grep -nE '//[[:space:]]*nolint:[a-zA-Z]' || true)"
     ;;
   *.yml | *.yaml)
     blanket="$(printf '%s\n' "$added" | grep -nE 'yamllint[[:space:]]+disable([[:space:]]|$)|ansible-lint.*disable|#[[:space:]]*noqa' | grep -vE 'rule:' || true)"

@@ -1,0 +1,46 @@
+# Go language adapter. Activated by a `go.mod` at the project root; each check is
+# forced onto the gate's own config (colocated here), not the repo's. Go is the
+# gate's first compiled non-Rust language — the checks mirror the Rust adapter's
+# shape (fmt / lint / dep-audit / test) and reach for the same max-strictness
+# floor wherever golangci-lint allows (see `.golangci.yml`).
+name = "go"
+marker = "go.mod"
+
+# Honest-map evidence: any `.go` file in the tree must be covered by a declared
+# go project, or the gate fails closed (harness `detect`). Go was previously on
+# the `detect.toml` denylist; adding this adapter is the deliberate two-part
+# change that moves it from "hard fail" to "actually checked" (see ADR-031).
+[detect]
+extensions = ["go"]
+
+[[checks]]
+name = "fmt"
+# golangci-lint v2 owns formatting via its `formatters` section (gofumpt — the
+# stricter rustfmt analog). `fmt --diff` prints the needed changes and exits
+# non-zero when any file is unformatted. `-c` forces the gate config and skips
+# repo-config discovery. golangci-lint excludes vendor/ by default, so vendored
+# deps are not format-checked.
+cmd = "golangci-lint fmt -c {config}/.golangci.yml --diff"
+
+[[checks]]
+name = "lint"
+# The clippy analog: a maximal linter set (errcheck/gosec/staticcheck/revive/
+# gocritic/…) with all findings blocking. `-c` forces the gate's `.golangci.yml`
+# and disables discovery of the repo's own config — the config-forcing guarantee.
+cmd = "golangci-lint run -c {config}/.golangci.yml ./..."
+
+[[checks]]
+name = "vulncheck"
+# Call-graph-aware dependency vuln scan: only flags advisories actually reachable
+# from the code, fewer false positives than lockfile-only SCA. Fetches a fresh
+# vuln DB at scan time (the deliberate SCA-freshness stance — a newly-disclosed
+# advisory fails a previously-green build) and fails closed if it can't.
+# Complements the always-on osv-scanner + trivy-fs, which also cover go.mod/go.sum.
+cmd = "govulncheck ./..."
+
+[[checks]]
+name = "test"
+# No external config to own; go.mod + the package layout define the test surface.
+# Compiles every package and runs the suite — a failing suite fails the gate, but
+# (as with Rust/Python) the gate does not enforce that meaningful tests exist.
+cmd = "go test ./..."

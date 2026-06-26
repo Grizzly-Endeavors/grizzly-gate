@@ -1,9 +1,10 @@
 // Gate-owned ESLint flat config (authoritative; --config + --no-config-lookup so
-// the repo's eslint config is ignored). Resolves typescript-eslint from the
-// toolchain installed into this dir's node_modules at image build (see
-// Dockerfile), so the config import has a node_modules to find.
+// the repo's eslint config is ignored). Resolves typescript-eslint, the React
+// plugins, and eslint-plugin-svelte from the toolchain installed into this dir's
+// node_modules at image build (see Dockerfile), so every plugin import has a
+// node_modules to find.
 //
-// Three layers, mirroring the residuum philosophy and reaching Rust/Python-grade
+// Layers, mirroring the residuum philosophy and reaching Rust/Python-grade
 // strictness for TypeScript:
 //   1. SECURITY/DISCIPLINE core — pure ESLint rules with no typescript-eslint
 //      equivalent, applied to *every* JS/TS file (no eval-class footguns, no
@@ -18,8 +19,18 @@
 //      provides type/module resolution). A node project containing TS must declare
 //      its tsconfig — the harness fails closed otherwise — so GATE_TSCONFIG is
 //      always present when TS files exist. `no-console` is intentionally left off.
+//   4. REACT — rules-of-hooks (the real bug class) + exhaustive-deps + react
+//      recommended on `.jsx`/`.tsx`. `prop-types` is off (TS / tsc owns prop
+//      typing); the modern JSX runtime means `react-in-jsx-scope` is off too.
+//   5. SVELTE — eslint-plugin-svelte recommended on `.svelte` components, with
+//      the script parser set to typescript-eslint so `<script lang="ts">` parses.
+//      Type-aware checking of components is owned by the separate svelte-check
+//      step (against the same wrapped tsconfig), so this layer needs no TS program.
 import path from "node:path";
 import tseslint from "typescript-eslint";
+import react from "eslint-plugin-react";
+import reactHooks from "eslint-plugin-react-hooks";
+import svelte from "eslint-plugin-svelte";
 
 // Layer 1 — safe on every file (no typescript-eslint counterpart to conflict).
 const securityDisciplineRules = {
@@ -81,6 +92,42 @@ const tsBlocks = tsconfigPath
     ]
   : [];
 
+// Layer 4 — React. Recommended correctness rules plus the hooks rules, scoped to
+// JSX/TSX. `rules-of-hooks` (conditionally-called hooks) and `exhaustive-deps`
+// (stale closures) are the genuine bug classes; both are errors. `prop-types` is
+// off because tsc/type-aware eslint already enforce prop typing, and the modern
+// automatic JSX runtime removes the need for React to be in scope.
+const reactBlock = {
+  files: ["**/*.{jsx,tsx}"],
+  plugins: { react, "react-hooks": reactHooks },
+  languageOptions: {
+    parserOptions: { ecmaFeatures: { jsx: true } },
+  },
+  settings: { react: { version: "detect" } },
+  rules: {
+    ...react.configs.flat.recommended.rules,
+    ...react.configs.flat["jsx-runtime"].rules,
+    "react/prop-types": "off",
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "error",
+  },
+};
+
+// Layer 5 — Svelte. The plugin's recommended flat config wires svelte-eslint-parser
+// and the component-correctness rules; the override points the script-block parser
+// at typescript-eslint so `<script lang="ts">` parses, and applies the security
+// core. Type strictness for components is the svelte-check step's job.
+const svelteBlock = [
+  ...svelte.configs.recommended,
+  {
+    files: ["**/*.svelte"],
+    languageOptions: {
+      parserOptions: { parser: tseslint.parser },
+    },
+    rules: { ...securityDisciplineRules },
+  },
+];
+
 export default tseslint.config(
   {
     files: ["**/*.{js,mjs,cjs,jsx}"],
@@ -88,4 +135,6 @@ export default tseslint.config(
     rules: { ...jsCorrectnessRules, ...securityDisciplineRules },
   },
   ...tsBlocks,
+  reactBlock,
+  ...svelteBlock,
 );
