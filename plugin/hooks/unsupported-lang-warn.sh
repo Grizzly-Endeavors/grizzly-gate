@@ -9,8 +9,12 @@
 # gate, so this never claims to be authoritative. Run /grizzly-gate:check for the
 # real verdict. SessionStart cannot block; it only informs.
 #
-# Opt-out: set the plugin's warn_unsupported user-config to false.
+# Opt-out: set the plugin's warn_unsupported user-config to false, or disable the
+# whole plugin for the repo with a .grizzly-gate-disabled marker.
 set -euo pipefail
+
+source "${CLAUDE_PLUGIN_ROOT}/hooks/_common.sh"
+grizzly_gate_disabled && exit 0
 
 [ "${CLAUDE_PLUGIN_OPTION_WARN_UNSUPPORTED:-true}" = "true" ] || exit 0
 
