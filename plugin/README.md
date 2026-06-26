@@ -45,7 +45,7 @@ Then `/plugin install grizzly-gate@<your-marketplace>`. Either way, all it needs
 
 Sensible defaults, tunable where it matters:
 
-- **Image** — baked in as `bearflinn/grizzly-gate:latest`. Not prompted. Override with the `GRIZZLY_GATE_IMAGE` env var (e.g. a pinned tag, or a locally-built `grizzly-gate:local` when testing changes to the gate itself).
+- **Image** — baked in as `bearflinn/grizzly-gate:latest`. Not prompted. Override with the `GRIZZLY_GATE_IMAGE` env var (e.g. a pinned tag, or a locally-built `grizzly-gate:local` when testing changes to the gate itself). The image is multi-arch, so it runs natively on Apple Silicon Macs; to reproduce amd64 CI byte-for-byte on a Mac (only matters for arch-conditional code), set `DOCKER_DEFAULT_PLATFORM=linux/amd64`.
 - **`block_push`** — the only prompted option, a boolean that defaults to **off**. When on, Claude's `git push` runs the gate first and a failing gate blocks the push. Flip it in the `/plugin` config dialog or accept the default and rely on `/grizzly-gate:check`.
 
 The push guard fires only on Claude's own `git push` tool calls, not a human's manual terminal push — it stops the agent from shipping red code. It's independent of the maintainer pre-push hook in `scripts/hooks/pre-push`, which publishes the dev image and is a separate concern.
