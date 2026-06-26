@@ -95,7 +95,7 @@ In CI, archive `grizzly-gate-report/report.json` as a build artifact so the comp
 
 You don't need the full CI + signing flow to check your code — run the exact gate image against your working tree first. A local run does **everything CI does except** cosign signing and image-layer (CVE/SBOM) scanning, which need a built image and signing material. The honest-map check and every per-language + SAST/secret/dependency check run identically, because it's the same image.
 
-The image is published to Docker Hub as **`bearflinn/grizzly-gate:latest`** — no build required; `docker pull`s happen on demand.
+The image is published to Docker Hub as **`bearflinn/grizzly-gate:latest`** — no build required; `docker pull`s happen on demand. It's multi-arch (`linux/amd64` + `linux/arm64`), so it runs natively on Apple Silicon and Intel Macs as well as Linux — Docker pulls the variant matching your machine.
 
 **Run it directly** from the root of the repo you want to check:
 
@@ -110,6 +110,8 @@ Or use the wrapper, which does the same and forwards extra args:
 ```
 
 Either way the gate runs with no `--sign`/`--image`, writes `grizzly-gate-report/report.json`, and exits non-zero on failure, so it composes into your own pre-commit or CI.
+
+> **Mac/arm64 parity note.** CI builds and runs the amd64 image, so on Apple Silicon the arm64 variant is what you get by default. Every text-level check (lint, format, SAST, secrets, dependency scan) is deterministic across architectures — same pinned tool versions, same verdict. The only place a result can differ is code with architecture-conditional compilation (Rust `#[cfg(target_arch = …)]`, Go `//go:build amd64`), which the compiling checks (clippy, `go vet`/`govulncheck`) evaluate for the host arch. If your repo has arch-gated code and you want byte-exact CI reproduction on a Mac, force the amd64 variant: `DOCKER_DEFAULT_PLATFORM=linux/amd64` (or `docker run --platform linux/amd64 …`) — it runs emulated, exactly as CI does.
 
 **Wire it into pre-commit** — the simplest path consumes this repo's hooks directly (pre-commit pulls the image for you):
 

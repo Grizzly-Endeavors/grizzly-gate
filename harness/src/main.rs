@@ -396,6 +396,12 @@ struct Subst<'a> {
     /// Path passed to `tsc --project` for node projects: either the repo's own
     /// tsconfig wrapped to force gate strictness, or the gate's base tsconfig.
     tsconfig: Option<&'a str>,
+    /// Ops-owned `skip_dirs` (the honest-map walk's excluded dir names), joined
+    /// with commas. A check can forward this to its tool — via the `{skip_dirs}`
+    /// token in its cmd or env — so the tool ignores the same dirs the gate does
+    /// not treat as first-party code (e.g. eslint, which otherwise lints
+    /// build/dist/.svelte-kit). Single-sourced from `detect.toml`.
+    skip_dirs: Option<&'a str>,
 }
 
 /// Run each declared project's adapter checks (in its own directory) and every
@@ -412,6 +418,10 @@ fn run_checks(
     projects: &[ResolvedProject],
 ) -> Result<Vec<StepResult>> {
     let mut results: Vec<StepResult> = Vec::new();
+
+    // Ops-owned skip_dirs, comma-joined, so a check can hand its tool the same
+    // exclude list the honest-map walk uses (via the `{skip_dirs}` token).
+    let skip_dirs = tree.detect.skip_dirs.join(",");
 
     // --- Language adapters, per declared project ---------------------------
     for project in projects {
@@ -443,6 +453,7 @@ fn run_checks(
             image: None,
             config: Some(&cfg),
             tsconfig: ts.as_ref().map(|t| t.arg.as_str()),
+            skip_dirs: Some(&skip_dirs),
         };
         for check in &adapter.checks {
             let mut result = run(
@@ -471,6 +482,7 @@ fn run_checks(
             image,
             config: Some(&cfg),
             tsconfig: None,
+            skip_dirs: Some(&skip_dirs),
         };
         let label = format!("scan:{}", scanner.name);
         match scanner.scope {
@@ -598,6 +610,9 @@ fn run(
         if let Some(v) = subst.tsconfig {
             r = r.replace("{tsconfig}", v);
         }
+        if let Some(v) = subst.skip_dirs {
+            r = r.replace("{skip_dirs}", v);
+        }
         r
     };
 
@@ -692,6 +707,7 @@ mod tests {
         image: None,
         config: None,
         tsconfig: None,
+        skip_dirs: None,
     };
 
     #[test]
@@ -713,6 +729,42 @@ mod tests {
             r.output
         );
         assert_eq!(r.exit_code, Some(3), "the exit code is recorded");
+    }
+
+    #[test]
+    fn skip_dirs_token_substituted_in_cmd_and_env() {
+        // The {skip_dirs} token must be forwarded both on the command line and in
+        // env values, so a check (e.g. eslint via GATE_SKIP_DIRS) can hand its
+        // tool the Ops-owned skip list. Mirrors the {tsconfig} wiring.
+        let subst = Subst {
+            source: None,
+            image: None,
+            config: None,
+            tsconfig: None,
+            skip_dirs: Some("dist,build,.svelte-kit"),
+        };
+        let mut env = BTreeMap::new();
+        env.insert("SD".to_string(), "{skip_dirs}".to_string());
+        let r = run(
+            &mut std::io::sink(),
+            "t:skip",
+            "sh -c 'echo cmd={skip_dirs}; echo env=$SD'",
+            Path::new("."),
+            subst,
+            &env,
+        )
+        .expect("logging to a sink cannot fail");
+        assert!(r.ok, "echo succeeds: {:?}", r.output);
+        assert!(
+            r.output.contains("cmd=dist,build,.svelte-kit"),
+            "the {{skip_dirs}} token is replaced in the command: {:?}",
+            r.output
+        );
+        assert!(
+            r.output.contains("env=dist,build,.svelte-kit"),
+            "the {{skip_dirs}} token is replaced in env values: {:?}",
+            r.output
+        );
     }
 
     #[test]

@@ -33,6 +33,7 @@ skip_dirs = [
   ".tox",
   "dist",
   "build",
+  ".svelte-kit",
 ]
 
 # --- Unsupported code languages (any evidence => fail closed) ----------------

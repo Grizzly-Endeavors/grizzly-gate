@@ -119,7 +119,7 @@ You don't need the signing key, a registry, or an admission controller to get mo
 docker run --rm -v "$PWD:/src" -w /src bearflinn/grizzly-gate:latest --source /src
 ```
 
-A standalone run does everything CI does **except** cosign signing and image-layer (CVE/SBOM) scanning — those need a built image and signing material. The honest-map check and every per-language + SAST/secret/dependency check run identically, because it's the same image. The dev-distribution image at `bearflinn/grizzly-gate:latest` is published for exactly this (it signs nothing). See [Using the gate](docs/using-the-gate.md) for local setup, the pre-commit wiring, the full `gate-config.json` reference, the violation→fix table, and the machine-readable failure report.
+A standalone run does everything CI does **except** cosign signing and image-layer (CVE/SBOM) scanning — those need a built image and signing material. The honest-map check and every per-language + SAST/secret/dependency check run identically, because it's the same image. The dev-distribution image at `bearflinn/grizzly-gate:latest` is published for exactly this (it signs nothing) and is multi-arch (`linux/amd64` + `linux/arm64`), so it runs natively on Apple Silicon and Intel Macs. See [Using the gate](docs/using-the-gate.md) for local setup, the pre-commit wiring, the full `gate-config.json` reference, the violation→fix table, and the machine-readable failure report.
 
 ### In Claude Code — the plugin
 

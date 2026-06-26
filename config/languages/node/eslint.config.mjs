@@ -32,6 +32,19 @@ import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 import svelte from "eslint-plugin-svelte";
 
+// Global ignores, single-sourced from the gate's Ops-owned skip_dirs (passed by
+// the harness as GATE_SKIP_DIRS). The honest-map walk skips these dirs as
+// non-first-party (deps/build artifacts); without this eslint would still lint
+// them, since ESLint 9 flat config only auto-ignores node_modules (not dist/
+// build/.svelte-kit/dot-dirs). A flat-config object with only `ignores` is a
+// global ignore; each dir name becomes an "anywhere, recursive" pattern.
+const skipDirs = (process.env.GATE_SKIP_DIRS ?? "")
+  .split(",")
+  .map((d) => d.trim())
+  .filter(Boolean);
+const ignoreBlock =
+  skipDirs.length > 0 ? [{ ignores: skipDirs.map((d) => `**/${d}/**`) }] : [];
+
 // Layer 1 — safe on every file (no typescript-eslint counterpart to conflict).
 const securityDisciplineRules = {
   "no-eval": "error",
@@ -129,6 +142,7 @@ const svelteBlock = [
 ];
 
 export default tseslint.config(
+  ...ignoreBlock,
   {
     files: ["**/*.{js,mjs,cjs,jsx}"],
     languageOptions: { ecmaVersion: "latest", sourceType: "module" },
