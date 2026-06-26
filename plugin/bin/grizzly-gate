@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# grizzly-gate local pre-check, packaged for the Claude Code plugin.
+#
+# Runs the exact published gate image CI runs, against the current working tree.
+# A local pass means a CI pass for everything except the two things a local run
+# deliberately cannot do: cosign signing and image-layer (CVE/SBOM) scanning.
+# The honest-map check and every per-language + SAST/secret/dependency check run
+# identically. Writes grizzly-gate-report/report.json; never signs.
+#
+# This is the single source of truth for the local docker-run invocation — the
+# repo's scripts/grizzly-gate-local.sh delegates here so there is one copy.
+#
+# Image: registry + tag are baked in as a sensible default. Override only when
+# you need a pinned tag or a locally-built `grizzly-gate:local`:
+#     GRIZZLY_GATE_IMAGE=grizzly-gate:local grizzly-gate
+# Extra args are forwarded to the harness (e.g. --report-dir <dir>). Do not pass
+# --sign; there is no signing material here.
+set -euo pipefail
+
+IMAGE="${GRIZZLY_GATE_IMAGE:-bearflinn/grizzly-gate:latest}"
+
+# Pull on demand if absent. A published tag just works; a local-only tag like
+# grizzly-gate:local won't pull, which is the signal to build it first.
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "grizzly-gate: pulling $IMAGE …" >&2
+  if ! docker pull "$IMAGE"; then
+    echo "grizzly-gate: could not get image '$IMAGE'." >&2
+    echo "  for a local source build:  docker build -t grizzly-gate:local <path-to-grizzly-gate>" >&2
+    echo "  then:  GRIZZLY_GATE_IMAGE=grizzly-gate:local grizzly-gate" >&2
+    exit 1
+  fi
+fi
+
+# Mount the working tree read-write and run from it: the node tsconfig wrapper
+# and the report dir are written into the tree (both gitignorable). No
+# --sign/--image — a local pre-check verifies the honest map + every source
+# check and writes grizzly-gate-report/report.json, but never signs.
+exec docker run --rm \
+  -v "$PWD:/src" \
+  -w /src \
+  "$IMAGE" \
+  --source /src \
+  "$@"

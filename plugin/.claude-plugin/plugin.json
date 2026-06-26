@@ -1,0 +1,33 @@
+{
+  "name": "grizzly-gate",
+  "description": "Run the grizzly-gate local pre-check, read its report.json, and optionally block pushes of un-gated code.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Grizzly Endeavors",
+    "email": "bearflinn@gmail.com"
+  },
+  "homepage": "https://github.com/Grizzly-Endeavors/grizzly-gate",
+  "repository": "https://github.com/Grizzly-Endeavors/grizzly-gate",
+  "license": "MIT",
+  "keywords": ["ci", "gate", "pre-check", "cosign", "supply-chain"],
+  "userConfig": {
+    "block_push": {
+      "type": "boolean",
+      "title": "Block git push on gate failure",
+      "description": "When on, Claude's `git push` runs the local gate first and a failing gate blocks the push. Off by default — the gate stays available as /grizzly-gate:check.",
+      "default": false
+    },
+    "warn_unsupported": {
+      "type": "boolean",
+      "title": "Warn on un-adapted languages at session start",
+      "description": "When on, a session in a repo containing code the gate has no adapter for shows a heads-up that the gate will fail closed. Advisory only.",
+      "default": true
+    },
+    "warn_suppression": {
+      "type": "boolean",
+      "title": "Warn when an edit adds a lint suppression",
+      "description": "When on, edits that add any lint suppression are flagged — blanket ones (#[allow], bare # noqa, @ts-ignore) as forbidden, scoped reasoned ones as still-needs-sign-off. Claude is told to refactor rather than suppress and to confirm with you before keeping one. Advisory only.",
+      "default": true
+    }
+  }
+}
