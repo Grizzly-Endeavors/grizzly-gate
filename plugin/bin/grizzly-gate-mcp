@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# grizzly-gate MCP server launcher for the Claude Code plugin.
+#
+# Starts the gate image in MCP mode (`grizzly-gate mcp`) and speaks
+# newline-delimited JSON-RPC 2.0 over stdio, so an agent can run the gate and
+# pull one check's output at a time instead of ingesting the whole report.json
+# into its context window. This is the same source-only surface as the local
+# pre-check (bin/grizzly-gate) — it never signs and never scans an image.
+#
+# Registered as the plugin's `mcpServers.gate` command. Claude Code
+# launches it once per session with the project root as the working directory,
+# so $PWD is the repo to gate. `-i` keeps stdin open for the JSON-RPC stream;
+# the gate's own human log is routed to stderr by the harness, keeping stdout
+# clean for the protocol.
+#
+# Image: shares GRIZZLY_GATE_IMAGE with bin/grizzly-gate so a pinned tag or a
+# locally-built `grizzly-gate:local` applies to both.
+set -euo pipefail
+
+IMAGE="${GRIZZLY_GATE_IMAGE:-bearflinn/grizzly-gate:latest}"
+
+# Pull on demand if absent, mirroring bin/grizzly-gate. Diagnostics go to stderr
+# so they never corrupt the JSON-RPC stream on stdout.
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "grizzly-gate: pulling $IMAGE …" >&2
+  if ! docker pull "$IMAGE" >&2; then
+    echo "grizzly-gate: could not get image '$IMAGE'." >&2
+    echo "  for a local source build:  docker build -t grizzly-gate:local <path-to-grizzly-gate>" >&2
+    echo "  then:  GRIZZLY_GATE_IMAGE=grizzly-gate:local <relaunch the MCP server>" >&2
+    exit 1
+  fi
+fi
+
+exec docker run -i --rm \
+  -v "$PWD:/src" \
+  -w /src \
+  "$IMAGE" \
+  mcp --source /src

@@ -6,6 +6,9 @@
 # SessionStart cannot block; it only informs.
 set -euo pipefail
 
+source "${CLAUDE_PLUGIN_ROOT}/hooks/_common.sh"
+grizzly_gate_disabled && exit 0
+
 input="$(cat)"
 src="$(printf '%s' "$input" | jq -r '.source // ""')"
 # Only on a fresh/resumed/cleared session — not on every compaction mid-work.

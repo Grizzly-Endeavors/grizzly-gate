@@ -9,16 +9,18 @@
 mod config;
 mod detect;
 mod gateconfig;
+mod mcp;
 mod report;
 
 use anyhow::{bail, Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use config::Scope;
 use gateconfig::ResolvedProject;
 use report::Report;
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::Command as ProcessCommand;
 use std::time::Instant;
 
 /// Config tree baked into the image; overridable per-invocation with `--config`
@@ -32,6 +34,11 @@ const DEFAULT_CONFIG_DIR: &str = "/etc/grizzly-gate/config";
     about = "grizzly-platform CI gate harness"
 )]
 struct Cli {
+    /// Optional subcommand. With none, the gate runs once against `--source` and
+    /// exits non-zero on a failed verdict (the default CI / local pre-check flow).
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Repository checkout to gate.
     #[arg(long, default_value = ".")]
     source: PathBuf,
@@ -63,6 +70,49 @@ struct Cli {
     /// every run; holds the full untruncated output of every check.
     #[arg(long, default_value = "./grizzly-gate-report")]
     report_dir: PathBuf,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Serve the gate over the Model Context Protocol (newline-delimited
+    /// JSON-RPC on stdio). Lets an agent run the gate and pull one check's
+    /// output at a time, instead of ingesting the whole report into context.
+    /// Never signs — the same source-only surface as a local pre-check.
+    Mcp(McpArgs),
+}
+
+#[derive(clap::Args)]
+struct McpArgs {
+    /// Repository checkout to gate.
+    #[arg(long, default_value = ".")]
+    source: PathBuf,
+
+    /// Config root override (see `--config` on the top-level command).
+    #[arg(long)]
+    config: Option<PathBuf>,
+
+    /// Directory the run report is written to and read back from.
+    #[arg(long, default_value = "./grizzly-gate-report")]
+    report_dir: PathBuf,
+}
+
+/// Resolve the config root: explicit `--config`, else `GRIZZLY_GATE_CONFIG_DIR`,
+/// else the tree baked into the image.
+fn resolve_config_root(explicit: Option<&Path>) -> PathBuf {
+    explicit
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::var_os("GRIZZLY_GATE_CONFIG_DIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_DIR))
+}
+
+/// The outcome of one gate run, decoupled from how it is presented: the report
+/// (carrying every check's full output), plus the in-memory step results for the
+/// run-mode FAILURES replay. On a phase-1 honest-map failure, `honest_map_message`
+/// holds the rich human explanation that the report's structured violations don't.
+pub struct GateRun {
+    pub report: Report,
+    pub honest_map_message: Option<String>,
+    results: Vec<StepResult>,
 }
 
 struct StepResult {
@@ -100,12 +150,30 @@ impl StepResult {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    match &cli.command {
+        Some(Command::Mcp(args)) => run_mcp(args),
+        None => run_once(&cli),
+    }
+}
 
-    let config_root = cli
-        .config
-        .clone()
-        .or_else(|| std::env::var_os("GRIZZLY_GATE_CONFIG_DIR").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_DIR));
+/// Serve the gate over MCP on stdio. Loads the config tree and resolves the
+/// source once, then hands control to the protocol loop. All of the gate's own
+/// human logging is routed to stderr so stdout carries only JSON-RPC.
+fn run_mcp(args: &McpArgs) -> Result<()> {
+    let config_root = resolve_config_root(args.config.as_deref());
+    let tree = config::load_tree(&config_root)
+        .with_context(|| format!("loading gate config from {}", config_root.display()))?;
+    let source = args
+        .source
+        .canonicalize()
+        .with_context(|| format!("resolving source path {}", args.source.display()))?;
+    mcp::serve(&tree, &source, &args.report_dir)
+}
+
+/// The default flow: run the gate once, print the human verdict, write the
+/// report, sign on a clean pass, and exit non-zero on any failure.
+fn run_once(cli: &Cli) -> Result<()> {
+    let config_root = resolve_config_root(cli.config.as_deref());
     let tree = config::load_tree(&config_root)
         .with_context(|| format!("loading gate config from {}", config_root.display()))?;
 
@@ -114,49 +182,34 @@ fn main() -> Result<()> {
         .canonicalize()
         .with_context(|| format!("resolving source path {}", cli.source.display()))?;
 
-    println!("grizzly-gate :: gating {}", source.display());
-    if let Some(image) = &cli.image {
-        println!("grizzly-gate :: image {image}");
-    }
-
-    let mut report = Report::new();
-
-    // --- Phase 1 — Honest map: required declaration, then independent
-    // verification. The repo must ship a gate-config.json that truthfully maps
-    // its layout, and the tree must contain no undeclared or unsupported code.
-    // Phase 1 must pass *completely* before Phase 2 runs — a repo that lies
-    // about (or omits) its contents never reaches the checks, let alone signing.
-    // Each stage reports *all* of its problems at once (no first-failure churn).
-    println!("\n── Phase 1: honest map ──");
-    let projects = match gateconfig::load(&source, &tree) {
-        Ok(projects) => projects,
-        Err(failure) => return fail_phase1(&mut report, failure, &cli.report_dir),
+    // The gate's progress log goes to stdout in this mode. Scope the lock so the
+    // verdict block below can use `println!` freely once the run has finished.
+    let run = {
+        let mut out = std::io::stdout().lock();
+        execute(&mut out, &tree, &source, cli.image.as_deref())?
     };
-    println!(
-        "grizzly-gate :: gate-config.json declares {} project(s)",
-        projects.len()
-    );
-    for p in &projects {
-        let where_ = if p.rel_path.as_os_str().is_empty() {
-            ".".to_string()
-        } else {
-            p.rel_path.display().to_string()
-        };
-        println!("grizzly-gate ::   - {} @ {where_}", p.language);
-    }
-    if let Err(failure) = detect::verify(&source, &tree, &projects) {
-        return fail_phase1(&mut report, failure, &cli.report_dir);
-    }
-    println!("grizzly-gate :: honest-map verification passed");
+    let GateRun {
+        mut report,
+        honest_map_message,
+        results,
+    } = run;
 
-    // --- Phase 2 — Checks. Every adapter check and scanner runs; none of them
-    // short-circuit the run, so the verdict reflects every failure at once.
-    println!("\n── Phase 2: checks ──");
-    let results = run_checks(&tree, &source, cli.image.as_deref(), &projects)?;
-    if results.is_empty() {
-        bail!("gate ran zero checks — refusing to pass (fail closed)");
+    // --- Phase-1 honest-map failure: record, point at the report, fail closed.
+    if let Some(message) = honest_map_message {
+        // The report is best-effort here; a write failure must not mask the
+        // actual honest-map failure, so surface it as a warning and continue.
+        match report.write(&cli.report_dir) {
+            Ok(path) => println!(
+                "\ngrizzly-gate :: honest-map violations recorded to {} \
+                 (query: jq -c '.honest_map.violations[]' {})",
+                path.display(),
+                path.display()
+            ),
+            Err(e) => eprintln!("grizzly-gate :: warning: could not write report: {e:#}"),
+        }
+        bail!("{message}");
     }
-    report.set_checks(results.iter().map(StepResult::to_report).collect());
+
     let report_path = report.write(&cli.report_dir)?;
 
     // --- Verdict -----------------------------------------------------------
@@ -198,30 +251,83 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Record a phase-1 honest-map failure to the report, print the rich human
-/// message, point at the report, and fail closed. Phase 2 never runs.
-fn fail_phase1(
-    report: &mut Report,
-    failure: report::HonestMapFailure,
-    report_dir: &Path,
-) -> Result<()> {
+/// Run both gate phases against `source`, logging progress to `log`, and return
+/// the structured outcome without presenting or signing it. Shared by the
+/// run-once flow (logs to stdout) and the MCP server (logs to stderr, keeping
+/// stdout clean for JSON-RPC). Writing the report and acting on the verdict are
+/// the caller's job.
+pub fn execute(
+    log: &mut dyn Write,
+    tree: &config::Tree,
+    source: &Path,
+    image: Option<&str>,
+) -> Result<GateRun> {
+    writeln!(log, "grizzly-gate :: gating {}", source.display())?;
+    if let Some(image) = image {
+        writeln!(log, "grizzly-gate :: image {image}")?;
+    }
+
+    let mut report = Report::new();
+
+    // --- Phase 1 — Honest map: required declaration, then independent
+    // verification. The repo must ship a gate-config.json that truthfully maps
+    // its layout, and the tree must contain no undeclared or unsupported code.
+    // Phase 1 must pass *completely* before Phase 2 runs — a repo that lies
+    // about (or omits) its contents never reaches the checks, let alone signing.
+    // Each stage reports *all* of its problems at once (no first-failure churn).
+    writeln!(log, "\n── Phase 1: honest map ──")?;
+    let projects = match gateconfig::load(source, tree) {
+        Ok(projects) => projects,
+        Err(failure) => return Ok(fail_phase1(report, failure)),
+    };
+    writeln!(
+        log,
+        "grizzly-gate :: gate-config.json declares {} project(s)",
+        projects.len()
+    )?;
+    for p in &projects {
+        let where_ = if p.rel_path.as_os_str().is_empty() {
+            ".".to_string()
+        } else {
+            p.rel_path.display().to_string()
+        };
+        writeln!(log, "grizzly-gate ::   - {} @ {where_}", p.language)?;
+    }
+    if let Err(failure) = detect::verify(source, tree, &projects) {
+        return Ok(fail_phase1(report, failure));
+    }
+    writeln!(log, "grizzly-gate :: honest-map verification passed")?;
+
+    // --- Phase 2 — Checks. Every adapter check and scanner runs; none of them
+    // short-circuit the run, so the verdict reflects every failure at once.
+    writeln!(log, "\n── Phase 2: checks ──")?;
+    let results = run_checks(log, tree, source, image, &projects)?;
+    if results.is_empty() {
+        bail!("gate ran zero checks — refusing to pass (fail closed)");
+    }
+    report.set_checks(results.iter().map(StepResult::to_report).collect());
+
+    Ok(GateRun {
+        report,
+        honest_map_message: None,
+        results,
+    })
+}
+
+/// Fold a phase-1 honest-map failure into a `GateRun`: record the structured
+/// violations on the report and carry the rich human message for the caller to
+/// present. Phase 2 never runs.
+fn fail_phase1(mut report: Report, failure: report::HonestMapFailure) -> GateRun {
     let report::HonestMapFailure {
         message,
         violations,
     } = failure;
     report.fail_honest_map(violations);
-    // The report is a best-effort artifact here; a write failure must not mask
-    // the actual honest-map failure, so surface it as a warning and continue.
-    match report.write(report_dir) {
-        Ok(path) => println!(
-            "\ngrizzly-gate :: honest-map violations recorded to {} \
-             (query: jq -c '.honest_map.violations[]' {})",
-            path.display(),
-            path.display()
-        ),
-        Err(e) => eprintln!("grizzly-gate :: warning: could not write report: {e:#}"),
+    GateRun {
+        report,
+        honest_map_message: Some(message),
+        results: Vec::new(),
     }
-    bail!("{message}")
 }
 
 /// Maximum tail of a failing check's output replayed in the FAILURES block. The
@@ -299,6 +405,7 @@ struct Subst<'a> {
 /// so a Rust crate in a subdir or a second project in a monorepo is checked
 /// exactly where the (already-verified) `gate-config.json` says it lives.
 fn run_checks(
+    log: &mut dyn Write,
     tree: &config::Tree,
     source: &Path,
     image: Option<&str>,
@@ -321,10 +428,11 @@ fn run_checks(
         } else {
             project.rel_path.display().to_string()
         };
-        println!(
+        writeln!(
+            log,
             "\n=== {} @ {where_} (marker: {}) ===",
             adapter.name, adapter.marker
-        );
+        )?;
 
         // For node, resolve the tsconfig the checks use. A repo-declared tsconfig
         // is wrapped so its module/path resolution is honored while the gate's
@@ -338,12 +446,13 @@ fn run_checks(
         };
         for check in &adapter.checks {
             let mut result = run(
+                log,
                 &format!("{}:{}", adapter.name, check.name),
                 &check.cmd,
                 &project.abs_path,
                 subst,
                 &check.env,
-            );
+            )?;
             result.language = Some(adapter.name.clone());
             result.project = Some(where_.clone());
             results.push(result);
@@ -365,14 +474,17 @@ fn run_checks(
         };
         let label = format!("scan:{}", scanner.name);
         match scanner.scope {
-            Scope::Source => results.push(run(&label, &scanner.cmd, source, subst, &scanner.env)),
-            Scope::Image if image.is_some() => {
-                results.push(run(&label, &scanner.cmd, source, subst, &scanner.env));
+            Scope::Source => {
+                results.push(run(log, &label, &scanner.cmd, source, subst, &scanner.env)?);
             }
-            Scope::Image => println!(
+            Scope::Image if image.is_some() => {
+                results.push(run(log, &label, &scanner.cmd, source, subst, &scanner.env)?);
+            }
+            Scope::Image => writeln!(
+                log,
                 "grizzly-gate :: skipping image scanner '{}' (no --image given)",
                 scanner.name
-            ),
+            )?,
         }
     }
 
@@ -460,14 +572,18 @@ fn resolve_tsconfig(
 }
 
 /// Run one command line in `cwd` after applying `subst` to the command and to
-/// each env value.
+/// each env value. Progress and the tool's captured output are written to `log`;
+/// the only fallible part is that logging, so the returned `Result` reflects a
+/// log write failure, not the check's own pass/fail (which lives in the
+/// `StepResult`).
 fn run(
+    log: &mut dyn Write,
     label: &str,
     cmdline: &str,
     cwd: &Path,
     subst: Subst,
     env: &BTreeMap<String, String>,
-) -> StepResult {
+) -> Result<StepResult> {
     let apply = |s: &str| -> String {
         let mut r = s.to_string();
         if let Some(v) = subst.source {
@@ -486,13 +602,13 @@ fn run(
     };
 
     let rendered = apply(cmdline);
-    println!("\n── {label}\n   $ {rendered}");
+    writeln!(log, "\n── {label}\n   $ {rendered}")?;
 
     let parts = shlex::split(&rendered).unwrap_or_default();
     let Some((program, args)) = parts.split_first() else {
         let msg = format!("could not parse command: {rendered}");
         eprintln!("   ! {msg}");
-        return StepResult {
+        return Ok(StepResult {
             label: label.into(),
             language: None,
             project: None,
@@ -501,11 +617,11 @@ fn run(
             exit_code: None,
             secs: 0.0,
             output: msg,
-        };
+        });
     };
 
     let start = Instant::now();
-    let mut command = Command::new(program);
+    let mut command = ProcessCommand::new(program);
     command.args(args).current_dir(cwd);
     for (k, v) in env {
         command.env(k, apply(v));
@@ -522,9 +638,9 @@ fn run(
         Ok(o) => {
             let mut buf = String::from_utf8_lossy(&o.stdout).into_owned();
             buf.push_str(&String::from_utf8_lossy(&o.stderr));
-            print!("{buf}");
+            write!(log, "{buf}")?;
             if !buf.is_empty() && !buf.ends_with('\n') {
-                println!();
+                writeln!(log)?;
             }
             (o.status.success(), o.status.code(), buf)
         }
@@ -534,7 +650,7 @@ fn run(
             (false, None, msg)
         }
     };
-    StepResult {
+    Ok(StepResult {
         label: label.into(),
         language: None,
         project: None,
@@ -543,7 +659,7 @@ fn run(
         exit_code,
         secs,
         output: captured,
-    }
+    })
 }
 
 /// cosign sign by digest. `COSIGN_PASSWORD` is inherited from the environment
@@ -557,7 +673,7 @@ fn sign_image(image: &str, key: &str, insecure: bool) -> Result<()> {
         args.push("--allow-insecure-registry");
     }
     args.push(image);
-    let status = Command::new("cosign")
+    let status = ProcessCommand::new("cosign")
         .args(&args)
         .status()
         .context("spawning cosign")?;
@@ -582,12 +698,14 @@ mod tests {
     fn run_captures_failing_tool_output() {
         let env = BTreeMap::new();
         let r = run(
+            &mut std::io::sink(),
             "t:fail",
             "sh -c 'echo boom >&2; exit 3'",
             Path::new("."),
             NO_SUBST,
             &env,
-        );
+        )
+        .expect("logging to a sink cannot fail");
         assert!(!r.ok, "a non-zero exit must mark the step failed");
         assert!(
             r.output.contains("boom"),

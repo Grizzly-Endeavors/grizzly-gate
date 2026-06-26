@@ -15,8 +15,12 @@
 # confirm with the user before keeping any suppression. The gate stays the
 # authoritative enforcer.
 #
-# Opt-out: set the plugin's warn_suppression user-config to false.
+# Opt-out: set the plugin's warn_suppression user-config to false, or disable the
+# whole plugin for the repo with a .grizzly-gate-disabled marker.
 set -euo pipefail
+
+source "${CLAUDE_PLUGIN_ROOT}/hooks/_common.sh"
+grizzly_gate_disabled && exit 0
 
 [ "${CLAUDE_PLUGIN_OPTION_WARN_SUPPRESSION:-true}" = "true" ] || exit 0
 

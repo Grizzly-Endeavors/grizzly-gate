@@ -11,6 +11,9 @@
 # the normal permission flow (i.e. allow).
 set -euo pipefail
 
+source "${CLAUDE_PLUGIN_ROOT}/hooks/_common.sh"
+grizzly_gate_disabled && exit 0
+
 input="$(cat)"
 cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 
