@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Schema version of the emitted report. Bumped only on a breaking shape change
 /// so a consumer can refuse an unknown layout rather than misread it.
@@ -25,7 +25,7 @@ pub const SCHEMA: u32 = 1;
 pub const FILE: &str = "report.json";
 
 /// One gate run, serialized to `report.json`.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Report {
     schema: u32,
     verdict: Verdict,
@@ -38,21 +38,21 @@ pub struct Report {
     query_hints: Vec<String>,
 }
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Verdict {
     Pass,
     Fail,
 }
 
-#[derive(Serialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
 pub enum Phase {
     HonestMap,
     Checks,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct HonestMap {
     ok: bool,
     violations: Vec<Violation>,
@@ -60,7 +60,7 @@ struct HonestMap {
 
 /// One honest-map problem, structured for querying. The same problems are also
 /// rendered to a human message on [`HonestMapFailure`].
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Violation {
     pub class: ViolationClass,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -70,7 +70,7 @@ pub struct Violation {
     pub reason: String,
 }
 
-#[derive(Serialize, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub enum ViolationClass {
     /// The declaration itself is invalid (parse/version error, or a project
@@ -86,7 +86,7 @@ pub enum ViolationClass {
 
 /// One executed check (language adapter step or scanner). `output` is the full,
 /// untruncated combined stdout+stderr — this is the durable record.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Check {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -201,6 +201,42 @@ impl Report {
     /// the terminal `FAILURES` block so the query recipe is always at hand.
     pub fn query_hints(&self) -> &[String] {
         &self.query_hints
+    }
+
+    /// Read a previously-written `report.json` from `dir`, if one exists. Returns
+    /// `Ok(None)` when no report has been written there yet (e.g. an MCP session
+    /// that queries the summary before its first run). A present-but-corrupt file
+    /// is surfaced as an error rather than silently treated as absent.
+    pub fn read(dir: &Path) -> Result<Option<Self>> {
+        let path = dir.join(FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading report {}", path.display())),
+        };
+        let report = serde_json::from_str(&text)
+            .with_context(|| format!("parsing report {}", path.display()))?;
+        Ok(Some(report))
+    }
+
+    /// The run verdict (pass/fail).
+    pub fn verdict(&self) -> Verdict {
+        self.verdict
+    }
+
+    /// Which phase failed, if any.
+    pub fn failed_phase(&self) -> Option<Phase> {
+        self.failed_phase
+    }
+
+    /// The executed checks (empty when phase 1 failed before any check ran).
+    pub fn checks(&self) -> &[Check] {
+        &self.checks
+    }
+
+    /// The recorded honest-map violations (empty on a clean phase 1).
+    pub fn honest_map_violations(&self) -> &[Violation] {
+        &self.honest_map.violations
     }
 }
 
