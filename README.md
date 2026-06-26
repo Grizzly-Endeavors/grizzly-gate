@@ -107,6 +107,8 @@ jobs:
 
 That's the whole integration. The gate owns the checks; the app repo owns build + deploy. A full example lives in [`deploy-with-gate.yaml.example`](https://github.com/Grizzly-Endeavors/grizzly-platform/blob/master/.github/templates/ci/deploy-with-gate.yaml.example) (the reusable `gate.yaml` workflow it calls is platform-side glue: it pulls this image, runs it, and on pass signs with the platform's key).
 
+Developers don't have to push to find out if the gate is happy: the same image runs locally as a pre-check (no signing, no image scan) and wires into pre-commit. See [Using the gate](docs/using-the-gate.md) for local setup, the full `gate-config.json` reference, the violation→fix table, and the machine-readable failure report.
+
 ## Trust model
 
 - **Key-based cosign**, private key in a secret store (the platform uses OpenBao), delivered to CI runners by External Secrets. The public key is embedded in the Kyverno policy. (Keyless/Sigstore was considered and deferred — see [ADR-028](docs/decisions/028-centralized-ci-gate.md).)
@@ -137,6 +139,7 @@ None of these are required to adopt the *pattern* — the six principles port to
 
 ## Further reading
 
+- [Using the gate](docs/using-the-gate.md) — the consumer guide: authoring `gate-config.json`, fixing each violation class, the queryable failure report, and running the gate locally / in pre-commit.
 - [Coverage & threat model](docs/coverage.md) — exactly what failure modes and vulnerability classes the gate prevents, per tool, plus the gaps it doesn't.
 - [Coverage matrix](docs/coverage-matrix.md) — the same coverage as an at-a-glance grid: skim a threat class (SQL injection, strict typing, vulnerable deps) against each supported language.
 - ADRs — the *why*: [028 centralized gate](docs/decisions/028-centralized-ci-gate.md), [029 honest map](docs/decisions/029-gate-config-honest-map.md), [030 cross-ecosystem SCA](docs/decisions/030-cross-ecosystem-sca.md).

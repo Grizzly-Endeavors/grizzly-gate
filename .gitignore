@@ -1,3 +1,7 @@
 # Claude Code local-only files (machine-specific; never committed)
 CLAUDE.local.md
 .claude/settings.local.json
+
+# grizzly-gate run artifacts (a local/self pre-check writes these)
+grizzly-gate-report/
+.grizzly-gate.tsconfig.json
