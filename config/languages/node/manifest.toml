@@ -17,9 +17,13 @@ name = "node"
 marker = "package.json"
 
 # Honest-map evidence: any TS/JS file (or extensionless `node` shebang script)
-# must be covered by a declared node project (harness `detect`).
+# must be covered by a declared node project (harness `detect`). `.svelte`
+# components ride the node adapter too — a Svelte repo is a node project (it has
+# a `package.json`), so Svelte is folded in here rather than given its own
+# adapter (see ADR-031). React (`.jsx`/`.tsx`) needs no extra extension; it is
+# already node-detected and gets React-specific eslint rules (rules-of-hooks).
 [detect]
-extensions = ["ts", "tsx", "js", "jsx", "mjs", "cjs"]
+extensions = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "svelte"]
 shebangs = ["node"]
 
 [[checks]]
@@ -38,3 +42,15 @@ name = "tsc"
 # `--project` carries noEmit/strictness via the (wrapped) tsconfig; passing those
 # as flags too conflicts with `-p` on some tsc versions, so they live in config.
 cmd = "{config}/node_modules/.bin/tsc --project {tsconfig}"
+
+[[checks]]
+name = "svelte-check"
+# Type-aware checking of `.svelte` components (tsc can't parse single-file
+# components). Runs against the SAME wrapped tsconfig tsc uses, so component
+# `<script lang="ts">` is held to the gate's forced strictness; the repo's own
+# svelte.config.js (preprocessing only) is loaded from the project dir. This
+# check runs for every node project, so it's guarded to no-op when the project
+# has no `.svelte` files (node_modules excluded). A node project whose `.svelte`
+# components use TypeScript must declare a `tsconfig`, or the honest map fails
+# closed (harness `detect`) — the same rule TS files get.
+cmd = "sh -c 'if [ -n \"$(find . -name \"*.svelte\" -not -path \"./node_modules/*\" -print -quit)\" ]; then exec \"{config}/node_modules/.bin/svelte-check\" --tsconfig \"{tsconfig}\"; fi'"

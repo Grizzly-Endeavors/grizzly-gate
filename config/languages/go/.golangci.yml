@@ -1,0 +1,65 @@
+# Gate-owned golangci-lint config (authoritative). The harness forces this onto
+# every Go project via `-c {config}/.golangci.yml`, which also disables discovery
+# of the repo's own config — a repo cannot relax the bar by editing its own
+# `.golangci.yml`. This is the Go analog of the Rust clippy floor: a maximal,
+# blocking linter set mapped to the same failure classes (see docs/coverage.md).
+#
+# golangci-lint exits non-zero on ANY enabled finding, so "warnings are blockers"
+# is automatic — there is no warn/error split to soften.
+version: "2"
+
+linters:
+  # Start from nothing and enable an explicit, aggressive set (so an upstream
+  # default change can't silently weaken the floor).
+  default: none
+  enable:
+    # Silent-error-swallowing / error-wrapping (Rust `map_err_ignore`,
+    # `let_underscore_must_use`): unchecked errors and mis-wrapped errors fail.
+    - errcheck
+    - errorlint
+    - nilerr
+    # In-language security (the ruff-`S` / bandit analog). gosec G103 flags
+    # `unsafe` usage — the closest Go has to Rust's `-D unsafe_code`.
+    - gosec
+    # Correctness + pedantic (the clippy::pedantic analog).
+    - govet
+    - staticcheck   # v2: folds in gosimple + stylecheck
+    - revive
+    - gocritic
+    # Footguns, dead code, and resource leaks.
+    - ineffassign
+    - unused
+    - bodyclose     # unclosed HTTP response bodies
+    - noctx         # HTTP requests without a context
+    - rowserrcheck  # unchecked sql.Rows.Err
+    - sqlclosecheck # unclosed sql.Rows/Stmt
+    - makezero      # append to a non-zero-len make() slice
+    - predeclared   # shadowing a predeclared identifier
+    # Suppression hygiene (the `allow_attributes_without_reason` analog): every
+    # `//nolint` must name a specific linter AND carry an explanation, or it
+    # fails. You cannot blanket-`//nolint` your way past the gate.
+    - nolintlint
+
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+  exclusions:
+    # Tests legitimately do things the security/error lints would reject (fixture
+    # credentials, deliberately-ignored errors). Mirrors the Rust clippy.toml
+    # test exemptions, which scope panics to tests only.
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+# Formatting (the `rustfmt --check` analog). gofumpt is the stricter superset of
+# gofmt; goimports also enforces import grouping/ordering. Checked by the `fmt`
+# adapter step (`golangci-lint fmt --diff`).
+formatters:
+  enable:
+    - gofumpt
+    - goimports
