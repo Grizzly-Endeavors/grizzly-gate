@@ -41,6 +41,27 @@ if ! flock -n 9; then
   exit 0
 fi
 
+# Surface failures. The pre-push hook backgrounds this and always exits 0, so a
+# broken publish (e.g. a missing arm64 emulator) otherwise rots unnoticed for
+# days. On any non-zero exit past this point, drop a persistent marker the next
+# push will warn on, and fire a desktop notification. Clear the marker on a
+# clean publish. (Installed after the lock-skip so a skipped run touches nothing.)
+MARKER=".git/grizzly-gate-publish.failed"
+on_exit() {
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$MARKER"
+  else
+    printf 'grizzly-gate: PUBLISH FAILED (exit %s) at %s\n' "$rc" "$(date -Is)" >&2
+    printf 'FAILED (exit %s) at %s\n' "$rc" "$(date -Is)" >"$MARKER"
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send -u critical "grizzly-gate publish failed" \
+        "exit $rc — see .git/grizzly-gate-publish.log" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+trap on_exit EXIT
+
 if ! docker info >/dev/null 2>&1; then
   echo "grizzly-gate: docker is not available; cannot publish." >&2
   exit 1
