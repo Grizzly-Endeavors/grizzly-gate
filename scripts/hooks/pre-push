@@ -19,6 +19,17 @@ fi
 
 ROOT="$(git rev-parse --show-toplevel)"
 LOG="$ROOT/.git/grizzly-gate-publish.log"
+MARKER="$ROOT/.git/grizzly-gate-publish.failed"
+
+# A backgrounded publish that failed leaves this marker. Surface it now so a
+# broken publish setup can't silently rot across many pushes (it already did
+# once: a reboot dropped the arm64 emulator and every multi-arch publish since
+# died in the background). A new successful publish clears the marker.
+if [ -f "$MARKER" ]; then
+  echo "grizzly-gate: WARNING — the last image publish FAILED:" >&2
+  sed 's/^/  /' "$MARKER" >&2
+  echo "  see $LOG ; retrying now." >&2
+fi
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "grizzly-gate: docker not found; skipping image publish." >&2
