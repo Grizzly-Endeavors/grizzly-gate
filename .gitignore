@@ -5,3 +5,9 @@ CLAUDE.local.md
 # grizzly-gate run artifacts (a local/self pre-check writes these)
 grizzly-gate-report/
 .grizzly-gate.tsconfig.json
+
+# Config the harness materializes at run time from a template / from the scanned
+# repo (normally written into the image's baked config dir and cleaned up; ignored
+# here in case a direct `cargo run` against the source tree leaves one behind).
+config/languages/node/eslint.config.mjs
+config/util/osv-scanner/osv-scanner.toml

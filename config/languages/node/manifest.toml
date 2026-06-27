@@ -36,7 +36,9 @@ name = "eslint"
 # same wrapped tsconfig tsc uses. GATE_SKIP_DIRS hands it the Ops-owned skip_dirs
 # so eslint ignores the same generated/vendor dirs the honest-map walk does
 # (build/dist/.svelte-kit/…) — ESLint 9 flat config does not auto-ignore those.
-# Gate-owned binary so the toolchain is fixed.
+# Gate-owned binary so the toolchain is fixed. `eslint.config.mjs` is materialized
+# by the harness from `eslint.config.mjs.tmpl` at run time (the tree ships only the
+# `.tmpl` so the gate can gate itself — see that file's header and ADR-033).
 cmd = "{config}/node_modules/.bin/eslint --config {config}/eslint.config.mjs --no-config-lookup --no-error-on-unmatched-pattern ."
 env = { GATE_TSCONFIG = "{tsconfig}", GATE_SKIP_DIRS = "{skip_dirs}" }
 

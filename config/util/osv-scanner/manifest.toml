@@ -25,6 +25,14 @@
 # without it), Python-2.0 (its older variant), 0BSD (zero-clause BSD, tslib), and
 # BlueOak-1.0.0 (modern permissive, minimatch). All are OSI/permissive with no
 # copyleft or notice-propagation burden beyond what BSD/MIT already carry.
+#
+# `--config` points at an osv-scanner.toml the harness GENERATES at run time (into
+# this dir) listing the scanned repo's OWN crate names as `license.ignore`
+# overrides — osv-scanner resolves licenses from the registry, so a project's own
+# unpublished package resolves to UNKNOWN and would trip the allowlist; the gate
+# license-checks dependencies, not the repo itself. `--config` also disables
+# auto-discovery of a repo's own osv-scanner.toml, keeping the gate config
+# authoritative (config-forcing). See `materialize_osv_config` in harness/src/main.rs.
 name = "osv-scanner"
 scope = "source"
-cmd = 'osv-scanner scan source -r --allow-no-lockfiles --licenses="MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,Zlib,Unicode-3.0,Unicode-DFS-2016,MPL-2.0,PSF-2.0,Python-2.0,0BSD,BlueOak-1.0.0" {source}'
+cmd = 'osv-scanner scan source -r --config={config}/osv-scanner.toml --allow-no-lockfiles --licenses="MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,Zlib,Unicode-3.0,Unicode-DFS-2016,MPL-2.0,PSF-2.0,Python-2.0,0BSD,BlueOak-1.0.0" {source}'

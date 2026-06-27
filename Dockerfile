@@ -7,10 +7,15 @@
 
 # Single source of truth for the Rust toolchain version (the harness build AND
 # the clippy/rustfmt the gate runs). Hard floor is 1.85: a transitive dep (clap)
-# needs edition2024 cargo support, stabilized in 1.85.
-ARG RUST_IMAGE=rust:1.96-slim-bookworm
+# needs edition2024 cargo support, stabilized in 1.85. Digest-pinned to the
+# multi-arch manifest-list index (supply-chain reproducibility); bump tag+digest
+# together (`docker buildx imagetools inspect rust:<tag>` for the index digest).
+ARG RUST_IMAGE=rust:1.96-slim-bookworm@sha256:4732ca96fd086cb9be682050c3f0176288eebaac2b80aa2bcefccfaf198e1950
 
 # ── Stage 1: build the harness ──────────────────────────────────────────────
+# RUST_IMAGE is digest-pinned above; semgrep's missing-image-version rule can't
+# resolve a version through the ARG variable, so it false-positives on this FROM.
+# nosemgrep: dockerfile.best-practice.missing-image-version
 FROM ${RUST_IMAGE} AS harness
 WORKDIR /build
 COPY harness ./harness
@@ -23,11 +28,15 @@ RUN cargo build --release --manifest-path harness/Cargo.toml \
 # official rust image already ships a per-arch toolchain (its arm64 variant is
 # built natively), and `rustup component add` runs fine emulated; only the
 # rustup-init bootstrap is the problem.
+# nosemgrep: dockerfile.best-practice.missing-image-version
 FROM ${RUST_IMAGE} AS rusttoolchain
 RUN rustup component add clippy rustfmt
 
 # ── Stage 3: runtime with all adapters + scanners ───────────────────────────
-FROM debian:bookworm-slim
+# Digest-pinned to the multi-arch manifest-list index (supply-chain
+# reproducibility); bump tag+digest together via `docker buildx imagetools
+# inspect debian:bookworm-slim`.
+FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
 
 # Target architecture, populated automatically by buildx (amd64|arm64). Declared
 # WITHOUT a default on purpose: a Dockerfile default would override buildx's
@@ -218,14 +227,15 @@ RUN SEMGREP_RULES=/etc/grizzly-gate/config/util/semgrep/rules \
     && trivy image --download-db-only
 
 # Install the gate's Node lint toolchain into the node config dir, so the flat
-# config (`eslint.config.mjs`) resolves typescript-eslint, the React plugins, and
-# eslint-plugin-svelte from a node_modules beside it (and `.svelte` files get the
-# svelte-check typechecker). Pinned, exact versions — the Dockerfile ARGs are the
-# single source of truth (no committed package.json), so this layer depends ONLY
-# on those ARGs, not the config tree: it `mkdir`s the dir rather than relying on
-# `COPY config/`, so editing eslint.config.mjs or a manifest does not trigger a
-# (slow, emulated) npm reinstall. The later `COPY config/` overlays those files
-# beside the installed node_modules.
+# config (materialized at run time as `eslint.config.mjs`) resolves typescript-
+# eslint, the React plugins, and eslint-plugin-svelte from a node_modules beside it
+# (and `.svelte` files get the svelte-check typechecker). Pinned, exact versions —
+# the Dockerfile ARGs are the single source of truth (no committed package.json),
+# so this layer depends ONLY on those ARGs, not the config tree: it `mkdir`s the
+# dir rather than relying on `COPY config/`, so editing the flat-config template or
+# a manifest does not trigger a (slow, emulated) npm reinstall. The later
+# `COPY config/` overlays those files (including `eslint.config.mjs.tmpl`) beside
+# the installed node_modules.
 RUN mkdir -p /etc/grizzly-gate/config/languages/node \
     && cd /etc/grizzly-gate/config/languages/node \
     && npm init -y >/dev/null 2>&1 \

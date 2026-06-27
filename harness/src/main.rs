@@ -423,6 +423,12 @@ fn run_checks(
     // exclude list the honest-map walk uses (via the `{skip_dirs}` token).
     let skip_dirs = tree.detect.skip_dirs.join(",");
 
+    // The gate's own ESLint flat config ships as a `.tmpl` (so the honest-map
+    // walk doesn't flag the gate's config tree as undeclared node code when the
+    // gate gates itself). Materialize the live `.mjs` beside its node_modules
+    // before any node check runs; the guard removes it afterwards.
+    let eslint_config = materialize_eslint_config(tree, projects)?;
+
     // --- Language adapters, per declared project ---------------------------
     for project in projects {
         let adapter = tree
@@ -473,6 +479,18 @@ fn run_checks(
         }
     }
 
+    // Node checks are done; drop the materialized eslint config. Scanners walk
+    // the scanned source (not the gate's config dir), so this never affects them.
+    if let Some(cfg) = eslint_config {
+        cfg.cleanup();
+    }
+
+    // The gate license-checks *dependencies*, not the scanned repo's own packages.
+    // osv-scanner resolves licenses from the registry, so a project's own
+    // (unpublished) crate(s) resolve to UNKNOWN and trip the license allowlist.
+    // Generate an osv config that license-ignores those crate names for this run.
+    let osv_config = materialize_osv_config(tree, projects, &tree.detect.skip_dirs)?;
+
     // --- Scanners ----------------------------------------------------------
     let source_str = source.to_string_lossy().to_string();
     for scanner in &tree.scanners {
@@ -498,6 +516,10 @@ fn run_checks(
                 scanner.name
             )?,
         }
+    }
+
+    if let Some(cfg) = osv_config {
+        cfg.cleanup();
     }
 
     Ok(results)
@@ -581,6 +603,199 @@ fn resolve_tsconfig(
         arg: path.to_string_lossy().to_string(),
         temp: Some(path),
     }))
+}
+
+/// Source-of-truth `ESLint` flat config filename (a template, not a live `.mjs`)
+/// and the live filename the harness materializes it to at run time. See
+/// [`materialize_eslint_config`] and ADR-033.
+const ESLINT_TEMPLATE: &str = "eslint.config.mjs.tmpl";
+const ESLINT_CONFIG: &str = "eslint.config.mjs";
+
+/// The live `eslint.config.mjs` the harness writes into the node config dir for
+/// the duration of a run, plus the path to remove afterwards.
+struct MaterializedEslintConfig {
+    path: PathBuf,
+}
+
+impl MaterializedEslintConfig {
+    fn cleanup(self) {
+        // Best-effort: the config dir lives inside the ephemeral gate container,
+        // but a failed unlink is surfaced rather than silently swallowed.
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            eprintln!(
+                "grizzly-gate :: warning: could not remove eslint config {}: {e}",
+                self.path.display()
+            );
+        }
+    }
+}
+
+/// Materialize the gate's `ESLint` flat config from its shipped `.tmpl` into the
+/// node config dir, so eslint's `--config {config}/eslint.config.mjs` finds a
+/// real file whose bare plugin imports resolve against the sibling `node_modules`
+/// installed at image build. The config tree ships only the `.tmpl` (a non-detected
+/// extension) so the gate's honest-map walk never flags the gate's own config tree
+/// as undeclared node code when the gate gates itself. No-op (returns `None`) when
+/// no node project is declared, since no eslint check will run.
+fn materialize_eslint_config(
+    tree: &config::Tree,
+    projects: &[ResolvedProject],
+) -> Result<Option<MaterializedEslintConfig>> {
+    if !projects.iter().any(|p| p.language == "node") {
+        return Ok(None);
+    }
+    let adapter = tree
+        .adapters
+        .iter()
+        .find(|a| a.name == "node")
+        .context("node project declared but no node adapter in the config tree")?;
+    let tmpl = adapter.config_dir.join(ESLINT_TEMPLATE);
+    let dst = adapter.config_dir.join(ESLINT_CONFIG);
+    std::fs::copy(&tmpl, &dst).with_context(|| {
+        format!(
+            "materializing eslint config {} from {}",
+            dst.display(),
+            tmpl.display()
+        )
+    })?;
+    Ok(Some(MaterializedEslintConfig { path: dst }))
+}
+
+/// Config filename the harness generates into the osv-scanner config dir for the
+/// duration of a run (the manifest passes it via `--config`, which also disables
+/// osv-scanner's auto-discovery of a repo's own `osv-scanner.toml`).
+const OSV_CONFIG: &str = "osv-scanner.toml";
+
+/// The generated `osv-scanner.toml`, plus the path to remove after the scanners.
+struct MaterializedOsvConfig {
+    path: PathBuf,
+}
+
+impl MaterializedOsvConfig {
+    fn cleanup(self) {
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            eprintln!(
+                "grizzly-gate :: warning: could not remove osv config {}: {e}",
+                self.path.display()
+            );
+        }
+    }
+}
+
+/// Generate an `osv-scanner.toml` that excludes the scanned repo's OWN packages
+/// from license checking. osv-scanner resolves licenses from the registry, so a
+/// project's own unpublished crate(s) resolve to `UNKNOWN` and trip the license
+/// allowlist — but the gate license-checks *dependencies*, not the repo itself.
+/// The repo's crate names are collected by walking each declared Rust project for
+/// `Cargo.toml` `[package].name` (covering workspaces and nested crates); each is
+/// written as a `license.ignore` override. Returns `None` when no osv-scanner
+/// scanner is configured.
+fn materialize_osv_config(
+    tree: &config::Tree,
+    projects: &[ResolvedProject],
+    skip_dirs: &[String],
+) -> Result<Option<MaterializedOsvConfig>> {
+    let Some(scanner) = tree.scanners.iter().find(|s| s.name == "osv-scanner") else {
+        return Ok(None);
+    };
+
+    let mut body = String::from(
+        "# Generated by grizzly-gate at run time — do not edit.\n\
+         # The scanned repo's OWN packages are excluded from LICENSE checking only:\n\
+         # osv-scanner resolves licenses from the registry, so a project's own\n\
+         # unpublished package resolves to UNKNOWN. The gate license-checks\n\
+         # dependencies, not the repo itself (vuln scanning is unaffected).\n",
+    );
+    for name in local_crate_names(projects, skip_dirs) {
+        // Cargo enforces crate names to `[A-Za-z0-9_-]`, so the name needs no TOML
+        // string escaping; embed it directly in a basic string.
+        body.push_str("\n[[PackageOverrides]]\nname = \"");
+        body.push_str(&name);
+        body.push_str(
+            "\"\nlicense.ignore = true\n\
+             reason = \"the scanned project's own package; the gate checks dependency licenses, not the repo's own\"\n",
+        );
+    }
+
+    let dst = scanner.config_dir.join(OSV_CONFIG);
+    std::fs::write(&dst, body).with_context(|| format!("writing osv config {}", dst.display()))?;
+    Ok(Some(MaterializedOsvConfig { path: dst }))
+}
+
+/// Names of the repo's own crates across all declared Rust projects: every
+/// `Cargo.toml` under each project (minus the Ops-owned `skip_dirs` and `.git`)
+/// contributing its `[package].name`. Deduplicated and sorted. A `Cargo.toml`
+/// that cannot be read or parsed is skipped with a warning (worst case: a spurious
+/// license finding for that crate — fail-closed, never a missed dependency CVE).
+fn local_crate_names(
+    projects: &[ResolvedProject],
+    skip_dirs: &[String],
+) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for project in projects.iter().filter(|p| p.language == "rust") {
+        let walker = walkdir::WalkDir::new(&project.abs_path)
+            .follow_links(false)
+            .into_iter();
+        for entry in walker.filter_entry(|e| {
+            let n = e.file_name().to_string_lossy();
+            !(e.file_type().is_dir()
+                && (n == ".git" || skip_dirs.iter().any(|d| d.as_str() == n.as_ref())))
+        }) {
+            let Ok(entry) = entry else { continue };
+            if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
+                if let Some(name) = read_crate_name(entry.path()) {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// `[package].name` from a `Cargo.toml`, or `None` for a virtual workspace manifest
+/// (no `[package]`) or an unreadable/unparseable file (warned, not fatal).
+fn read_crate_name(path: &Path) -> Option<String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "grizzly-gate :: warning: could not read {} for crate name: {e}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    match crate_name_from_manifest(&text) {
+        Ok(name) => name,
+        Err(e) => {
+            eprintln!(
+                "grizzly-gate :: warning: could not parse {} for crate name: {e}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// Parse `[package].name` from `Cargo.toml` text. `Ok(None)` for a virtual
+/// workspace manifest (no `[package]`); `Err` for unparseable TOML. Split from the
+/// IO in [`read_crate_name`] so the parse mapping is unit-testable without the
+/// filesystem (the directory walk itself is covered end-to-end by a gate run).
+fn crate_name_from_manifest(text: &str) -> Result<Option<String>, toml::de::Error> {
+    let manifest: CargoManifest = toml::from_str(text)?;
+    Ok(manifest.package.map(|p| p.name))
+}
+
+/// The slice of a `Cargo.toml` the gate needs: just `[package].name` (absent for a
+/// virtual workspace manifest). Unknown fields are ignored by default.
+#[derive(serde::Deserialize)]
+struct CargoManifest {
+    package: Option<CargoPackage>,
+}
+
+#[derive(serde::Deserialize)]
+struct CargoPackage {
+    name: String,
 }
 
 /// Run one command line in `cwd` after applying `subst` to the command and to
@@ -764,6 +979,26 @@ mod tests {
             r.output.contains("env=dist,build,.svelte-kit"),
             "the {{skip_dirs}} token is replaced in env values: {:?}",
             r.output
+        );
+    }
+
+    #[test]
+    fn crate_name_parses_package_workspace_and_rejects_garbage() {
+        assert_eq!(
+            crate_name_from_manifest("[package]\nname = \"thing\"\nversion = \"1.0.0\"\n")
+                .expect("a valid manifest parses"),
+            Some("thing".to_string()),
+            "[package].name is read from a normal manifest"
+        );
+        assert_eq!(
+            crate_name_from_manifest("[workspace]\nmembers = [\"a\"]\n")
+                .expect("a valid manifest parses"),
+            None,
+            "a virtual workspace manifest has no package name"
+        );
+        assert!(
+            crate_name_from_manifest("not = valid = toml [[[").is_err(),
+            "unparseable TOML is an error (the caller warns and skips, never fatal)"
         );
     }
 

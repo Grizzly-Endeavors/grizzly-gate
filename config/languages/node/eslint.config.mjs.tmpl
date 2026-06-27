@@ -4,6 +4,13 @@
 // node_modules at image build (see Dockerfile), so every plugin import has a
 // node_modules to find.
 //
+// Shipped as `eslint.config.mjs.tmpl`, NOT a live `.mjs`: the gate gates itself,
+// and a real `.mjs` in this config tree would be flagged by the honest-map walk
+// as undeclared node code (a `.tmpl` is not a detected extension). The harness
+// materializes it to `eslint.config.mjs` beside this dir's node_modules at run
+// time (so its bare plugin imports resolve) and removes it after the node checks
+// — see `materialize_eslint_config` in harness/src/main.rs and ADR-033.
+//
 // Layers, mirroring the residuum philosophy and reaching Rust/Python-grade
 // strictness for TypeScript:
 //   1. SECURITY/DISCIPLINE core — pure ESLint rules with no typescript-eslint
