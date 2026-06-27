@@ -44,6 +44,18 @@ The strict lint configs, `-D warnings`, `deny.toml`, and max-denial scanner sett
 
 This repo owns the gate *source*. The platform owns the *integration*: the Argo build template, the reusable `gate.yaml` consumer workflow, the cosign signing key (OpenBao + External Secrets), Kyverno admission enforcement, and the operator runbook. When a local checkout of the platform is available, its path is recorded in `CLAUDE.local.md` (gitignored).
 
+## grizzly-gate (CI gate)
+
+This repo is gated by **its own gate** — grizzly-gate runs every per-language check + scanner against itself, and the gate is the reviewer: a green gate is what lets code ship without a human reading every diff. It is strict on purpose and fails **closed** — anything it cannot positively verify fails. We do not get to weaken the gate to make the gate pass.
+
+**The honest map (`gate-config.json`).** The repo root ships `gate-config.json` declaring one project: `rust` @ `harness`. The rest of the tree is the config rule tree (`config/`), the plugin, docs, and scripts — no other adapter-backed source. It can only *declare*, never weaken a check; a hostile tree walk confirms it, so it must match reality.
+
+**Self-gating wrinkle (ADR-033).** The gate's own ESLint flat config would be a live `.mjs` in `config/languages/node/` — which the honest-map walk would flag as undeclared node code. So it ships as `eslint.config.mjs.tmpl` (a non-detected extension) and the harness materializes the live `.mjs` beside its `node_modules` at run time, then removes it. When you add another gate-owned config that must carry an adapter-detected extension, follow the same template pattern — never an exclude.
+
+**Checking locally.** When the plugin's push-block hook is enabled it runs the gate automatically and blocks Claude's `git push` on a red result — so you don't pre-run it just to push. Run `/grizzly-gate:check` (or `grizzly-gate` from the repo root) yourself while iterating on a fix, or before a manual terminal push (the hook only guards Claude's pushes). It runs the CI image against your working tree and writes `grizzly-gate-report/report.json`; a local pass means a CI pass for everything except cosign signing and image-layer CVE/SBOM scanning. Note: a harness change only takes effect once a new image is built, so end-to-end node behavior is validated in CI after the image rebuilds.
+
+**When it fails.** Hand it to the `gate-fixer` agent — it reads the report and fixes violations in this repo's own code or its `gate-config.json`. Never relax a rule, disable a check, or add an ignore/exclude to get past the gate. A lint suppression is a last resort that needs the user's sign-off — prefer refactoring the code so it is not needed.
+
 ## Markdown
 
 When writing or editing `.md` files, don't hard-wrap paragraphs — let each paragraph and each bullet be one continuous line that soft-wraps. Keep newlines only between blocks (paragraphs, list items, headings).

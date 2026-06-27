@@ -60,7 +60,7 @@ This repo is gated by [grizzly-gate](https://github.com/Grizzly-Endeavors/grizzl
 
 **The honest map (`gate-config.json`).** The repo root ships `gate-config.json` declaring which languages live where. It can only *declare*, never weaken a check. A hostile tree walk confirms the declaration, so it must match reality — any adapter-backed file not covered by a declared project fails, and any un-adapted language hard-fails.
 
-**Before you push.** Run the gate locally with `/grizzly-gate:check` (or `grizzly-gate` from the repo root). It runs the exact CI image against your working tree and writes `grizzly-gate-report/report.json`. A local pass means a CI pass for everything except cosign signing and image-layer CVE/SBOM scanning.
+**Checking locally.** When the plugin's push-block hook is enabled it runs the gate automatically and blocks Claude's `git push` on a red result — so you don't pre-run it just to push. Run `/grizzly-gate:check` (or `grizzly-gate` from the repo root) yourself while iterating on a fix, or before a manual terminal push (the hook only guards Claude's pushes). It runs the exact CI image against your working tree and writes `grizzly-gate-report/report.json`; a local pass means a CI pass for everything except cosign signing and image-layer CVE/SBOM scanning.
 
 **When it fails.** Hand it to the `gate-fixer` agent — it reads the report and fixes violations in this repo's own code or its `gate-config.json`. Never relax a rule, disable a check, or add an ignore/exclude to get past the gate. A lint suppression is a last resort that needs the user's sign-off — prefer refactoring the code so it is not needed.
 ```
