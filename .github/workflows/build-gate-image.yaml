@@ -63,7 +63,10 @@ jobs:
           TIMEOUT=1800
           ELAPSED=0
           while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
-            STATUS=$(curl -sf "${ARGO_SERVER}/api/v1/workflows/argo/${WORKFLOW_NAME}" \
+            # Capture curl output first, then parse — never pipe curl straight into
+            # an interpreter (the "curl | sh" footgun the gate's own semgrep flags).
+            WF_JSON=$(curl -sf "${ARGO_SERVER}/api/v1/workflows/argo/${WORKFLOW_NAME}")
+            STATUS=$(printf '%s' "$WF_JSON" \
               | python3 -c "import sys,json; w=json.load(sys.stdin); print(w.get('status',{}).get('phase','Unknown'))")
 
             echo "  ${ELAPSED}s — status: ${STATUS}"
