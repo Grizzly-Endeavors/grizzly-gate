@@ -25,7 +25,7 @@ The harness is itself gated by these exact rules — `harness/clippy.toml`-class
 
 This repo holds the source; the **image is built in-cluster by grizzly-platform** (Argo Workflows + Kaniko), not by this repo's CI directly:
 
-- `.github/workflows/build-gate-image.yaml` (here) triggers on push to `master` and on `workflow_dispatch` — it submits the `build-gate-image` Argo `WorkflowTemplate` (which lives in grizzly-platform) and polls it.
+- `.github/workflows/build-gate-image.yaml` (here) triggers on push to `main` and on `workflow_dispatch` — it submits the `build-gate-image` Argo `WorkflowTemplate` (which lives in grizzly-platform) and polls it.
 - That template clones this repo, builds from the repo root, and pushes `grizzly-gate:{latest, <version>, <uid>}` to the in-cluster zot registry.
 - **Cut a release:** `workflow_dispatch` with `version=vX.Y.Z`. Apps pin via `gate_version` on the reusable `gate.yaml` workflow.
 - Runs on the org's self-hosted `lab-runners` (ARC), which reach the in-cluster Argo server.
