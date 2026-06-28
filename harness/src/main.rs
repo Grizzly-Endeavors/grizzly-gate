@@ -666,6 +666,11 @@ fn materialize_eslint_config(
 /// osv-scanner's auto-discovery of a repo's own `osv-scanner.toml`).
 const OSV_CONFIG: &str = "osv-scanner.toml";
 
+/// Checked-in, gate-owned data file (sibling to the generated config) holding the
+/// fleet-accepted `[[IgnoredVulns]]` — non-vulnerability advisories the vuln-only
+/// gate accepts (ADR-035). Appended verbatim to the generated osv config. Optional.
+const OSV_IGNORES: &str = "ignored-advisories.toml";
+
 /// The generated `osv-scanner.toml`, plus the path to remove after the scanners.
 struct MaterializedOsvConfig {
     path: PathBuf,
@@ -715,6 +720,21 @@ fn materialize_osv_config(
             "\"\nlicense.ignore = true\n\
              reason = \"the scanned project's own package; the gate checks dependency licenses, not the repo's own\"\n",
         );
+    }
+
+    // Append the fleet-accepted advisory ignores (vuln-only posture, ADR-035).
+    // Gate-owned data, not per-repo: a non-vulnerability advisory a downstream repo
+    // can't action is accepted here, not in the scanned tree. Absent file is fine.
+    let ignores = scanner.config_dir.join(OSV_IGNORES);
+    match std::fs::read_to_string(&ignores) {
+        Ok(content) => {
+            body.push('\n');
+            body.push_str(&content);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| format!("reading osv ignores {}", ignores.display()));
+        }
     }
 
     let dst = scanner.config_dir.join(OSV_CONFIG);

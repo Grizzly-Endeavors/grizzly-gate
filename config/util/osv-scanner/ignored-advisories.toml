@@ -1,0 +1,21 @@
+# Fleet-accepted advisories (DATA, not code). These are osv-scanner
+# `[[IgnoredVulns]]` entries the harness appends to its generated osv-scanner.toml
+# at run time (see materialize_osv_config in harness/src/main.rs).
+#
+# The gate is VULN-ONLY (ADR-034): it blocks on known vulnerabilities, not on
+# unmaintained / no-fix advisories that a downstream repo cannot action. Each
+# entry here is such a non-vulnerability advisory, accepted fleet-wide. cargo-deny
+# already drops unmaintained-class advisories via `unmaintained = "none"`; this is
+# the osv-scanner equivalent (osv-scanner has no advisory-type filter, only IDs).
+#
+# To accept another: add an entry (id + reason). To stop accepting one (a real fix
+# landed, or it was reclassified as a vulnerability): delete it. Keep the list
+# short and justified — it is the one place the vuln-only posture is relaxed.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0388"
+reason = "derivative: unmaintained, no safe upgrade exists; pulled transitively by poise. Not a vulnerability."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+reason = "proc-macro-error2: unmaintained advisory, no fix; transitive build-time macro dependency. Not a vulnerability."

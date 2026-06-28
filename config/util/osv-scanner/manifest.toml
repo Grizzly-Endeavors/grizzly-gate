@@ -35,4 +35,11 @@
 # authoritative (config-forcing). See `materialize_osv_config` in harness/src/main.rs.
 name = "osv-scanner"
 scope = "source"
-cmd = 'osv-scanner scan source -r --config={config}/osv-scanner.toml --allow-no-lockfiles --licenses="MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,Zlib,Unicode-3.0,Unicode-DFS-2016,MPL-2.0,PSF-2.0,Python-2.0,0BSD,BlueOak-1.0.0" {source}'
+# Vuln-only (sanctioned 2026-06-28, ADR-034): `--licenses` enforcement is dropped
+# — dependency licenses no longer block a deploy (they genuinely left repos
+# undeployable for non-security reasons and were a maintenance burden). Known
+# vulnerabilities still fail closed across every ecosystem. Unmaintained-class
+# advisories with no fix are ignored fleet-wide via the harness-generated
+# osv-scanner.toml (see materialize_osv_config); the gate is the reviewer for
+# vulnerabilities, not dependency hygiene.
+cmd = 'osv-scanner scan source -r --config={config}/osv-scanner.toml --allow-no-lockfiles {source}'
