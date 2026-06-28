@@ -1,5 +1,17 @@
 # Image SBOM/CVE scanner. Runs only when the harness is given a built image
 # (`--image`), against the gate's own trivy config.
+#
+# --image-src remote: the gate runs in a container with no docker/containerd/
+# podman socket, so the only place to reach the image is the registry it was
+# pushed to. Pin the source to `remote` to skip the (always-failing) local
+# daemon probes — without it trivy tries all four sources and reports a
+# confusing "image not found" multi-error.
+# --insecure: the in-cluster zot registry (registry.registry.svc.cluster.local:5000)
+# serves plain HTTP, no TLS — the same reason the runner's dockerd needs
+# --insecure-registry. Trivy's remote scanner defaults to HTTPS and fails with
+# "server gave HTTP response to HTTPS client" otherwise. The gate only ever
+# scans images in this in-cluster registry, so allowing insecure here is scoped
+# to that registry by construction.
 name = "trivy-image"
 scope = "image"
-cmd = "trivy image --quiet --exit-code 1 --config {config}/trivy.yaml {image}"
+cmd = "trivy image --quiet --exit-code 1 --config {config}/trivy.yaml --image-src remote --insecure {image}"
