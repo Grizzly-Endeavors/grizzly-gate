@@ -14,13 +14,16 @@
 # clean for the protocol.
 #
 # Image: shares GRIZZLY_GATE_IMAGE with bin/grizzly-gate so a pinned tag or a
-# locally-built `grizzly-gate:local` applies to both.
+# locally-built `grizzly-gate:local` applies to both. GRIZZLY_GATE_PULL controls
+# re-pulling a cached image, also mirroring bin/grizzly-gate: auto (default)
+# refreshes only a floating `:latest`, 1 forces it, 0 never refreshes.
 set -euo pipefail
 
 IMAGE="${GRIZZLY_GATE_IMAGE:-bearflinn/grizzly-gate:latest}"
+PULL="${GRIZZLY_GATE_PULL:-auto}"
 
-# Pull on demand if absent, mirroring bin/grizzly-gate. Diagnostics go to stderr
-# so they never corrupt the JSON-RPC stream on stdout.
+# Pull on demand if absent, mirroring bin/grizzly-gate. All pull output and
+# diagnostics go to stderr so they never corrupt the JSON-RPC stream on stdout.
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "grizzly-gate: pulling $IMAGE …" >&2
   if ! docker pull "$IMAGE" >&2; then
@@ -29,6 +32,11 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "  then:  GRIZZLY_GATE_IMAGE=grizzly-gate:local <relaunch the MCP server>" >&2
     exit 1
   fi
+# Refresh a cached image when asked (PULL=1) or for the floating :latest tag
+# (PULL=auto); a failed refresh falls back to the cached layer.
+elif [ "$PULL" = 1 ] || { [ "$PULL" = auto ] && [ "${IMAGE##*:}" = latest ]; }; then
+  echo "grizzly-gate: refreshing $IMAGE …" >&2
+  docker pull "$IMAGE" >&2 || echo "grizzly-gate: refresh failed; using cached $IMAGE." >&2
 fi
 
 exec docker run -i --rm \

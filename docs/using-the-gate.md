@@ -95,7 +95,7 @@ In CI, archive `grizzly-gate-report/report.json` as a build artifact so the comp
 
 You don't need the full CI + signing flow to check your code — run the exact gate image against your working tree first. A local run does **everything CI does except** cosign signing and image-layer (CVE/SBOM) scanning, which need a built image and signing material. The honest-map check and every per-language + SAST/secret/dependency check run identically, because it's the same image.
 
-The image is published to Docker Hub as **`bearflinn/grizzly-gate:latest`** — no build required; `docker pull`s happen on demand. It's multi-arch (`linux/amd64` + `linux/arm64`), so it runs natively on Apple Silicon and Intel Macs as well as Linux — Docker pulls the variant matching your machine.
+The image is published to Docker Hub as **`bearflinn/grizzly-gate:latest`** — no build required; `docker pull`s happen on demand. It's multi-arch (`linux/amd64` + `linux/arm64`), so it runs natively on Apple Silicon and Intel Macs as well as Linux — Docker pulls the variant matching your machine. The wrapper auto-refreshes the floating `:latest` on each run so you don't keep running a stale cached layer; set `GRIZZLY_GATE_PULL=0` to skip the refresh (run cached / offline) or `=1` to force a refresh of any tag. Running `docker run` directly (the command above) does **not** refresh on its own — pull first, or use the wrapper.
 
 **Run it directly** from the root of the repo you want to check:
 

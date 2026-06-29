@@ -13,14 +13,22 @@
 # Image: registry + tag are baked in as a sensible default. Override only when
 # you need a pinned tag or a locally-built `grizzly-gate:local`:
 #     GRIZZLY_GATE_IMAGE=grizzly-gate:local grizzly-gate
+# Freshness: GRIZZLY_GATE_PULL controls re-pulling an image you already have —
+#   auto (default) refreshes only a floating `:latest` tag (which goes stale
+#   silently otherwise); 1 forces a refresh of any tag; 0 never refreshes (run
+#   the cached layer, e.g. to pin a `:latest` you already pulled). A missing
+#   image is always pulled regardless. A refresh that fails is non-fatal — the
+#   cached layer is used.
 # Extra args are forwarded to the harness (e.g. --report-dir <dir>). Do not pass
 # --sign; there is no signing material here.
 set -euo pipefail
 
 IMAGE="${GRIZZLY_GATE_IMAGE:-bearflinn/grizzly-gate:latest}"
+PULL="${GRIZZLY_GATE_PULL:-auto}"
 
-# Pull on demand if absent. A published tag just works; a local-only tag like
-# grizzly-gate:local won't pull, which is the signal to build it first.
+# Pull on demand if absent (fatal on failure: there's nothing to run). A
+# published tag just works; a local-only tag like grizzly-gate:local won't pull,
+# which is the signal to build it first.
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "grizzly-gate: pulling $IMAGE …" >&2
   if ! docker pull "$IMAGE"; then
@@ -29,6 +37,11 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "  then:  GRIZZLY_GATE_IMAGE=grizzly-gate:local grizzly-gate" >&2
     exit 1
   fi
+# Otherwise refresh a cached image when asked (PULL=1) or when the tag is the
+# floating :latest (PULL=auto). A failed refresh falls back to the cached layer.
+elif [ "$PULL" = 1 ] || { [ "$PULL" = auto ] && [ "${IMAGE##*:}" = latest ]; }; then
+  echo "grizzly-gate: refreshing $IMAGE …" >&2
+  docker pull "$IMAGE" || echo "grizzly-gate: refresh failed; using cached $IMAGE." >&2
 fi
 
 # Mount the working tree read-write and run from it: the node tsconfig wrapper,
