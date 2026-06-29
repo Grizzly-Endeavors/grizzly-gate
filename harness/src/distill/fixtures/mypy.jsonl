@@ -1,0 +1,1 @@
+{"file": "src/bad.py", "line": 6, "column": 11, "end_line": 6, "end_column": 12, "message": "Incompatible return value type (got \"int\", expected \"str\")", "hint": null, "code": "return-value", "severity": "error"}

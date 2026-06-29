@@ -102,3 +102,29 @@ For each check: the literal terminal text, then the exact JSON an agent receives
 
 --- agent (get_check_output JSON, verbatim) ---
 {"findings":[{"col":3,"file":"index.js","line":2,"message":"Unexpected var, use let or const instead.","rule":"no-var","severity":"error"},{"col":7,"file":"index.js","line":2,"message":"'x' is assigned a value but never used.","rule":"no-unused-vars","severity":"error"},{"col":9,"file":"index.js","line":3,"message":"Expected '===' and instead saw '=='.","rule":"eqeqeq","severity":"error"}],"has_more":false,"mode":"findings","total":3}
+
+================ python:api:ruff ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: bad.py:1:8
+  rule: F401
+  message: `os` imported but unused
+- severity: error
+  loc: bad.py:2:8
+  rule: F401
+  message: `sys` imported but unused
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":8,"file":"bad.py","line":1,"message":"`os` imported but unused","rule":"F401","severity":"error"},{"col":8,"file":"bad.py","line":2,"message":"`sys` imported but unused","rule":"F401","severity":"error"}],"has_more":false,"mode":"findings","total":2}
+
+================ python:api:mypy ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: src/bad.py:6:11
+  rule: return-value
+  message: Incompatible return value type (got "int", expected "str")
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":11,"file":"src/bad.py","line":6,"message":"Incompatible return value type (got \"int\", expected \"str\")","rule":"return-value","severity":"error"}],"has_more":false,"mode":"findings","total":1}

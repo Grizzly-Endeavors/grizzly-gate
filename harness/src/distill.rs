@@ -98,6 +98,8 @@ fn parse(parser: &str, stdout: &str, stderr: &str) -> Result<Vec<Finding>, Strin
         "osv-scanner" => parse_osv(stdout),
         "gitleaks" => parse_gitleaks(stdout),
         "eslint" => parse_eslint(stdout),
+        "ruff" => parse_ruff(stdout),
+        "mypy" => parse_mypy(stdout),
         other => Err(format!("unknown parser '{other}'")),
     }
 }
@@ -582,6 +584,78 @@ fn normalize_eslint_severity(s: u64) -> &'static str {
     }
 }
 
+/// ruff `--output-format json`: a top-level array of `{code, message, filename,
+/// location:{row,column}, severity}`. One finding per diagnostic.
+fn parse_ruff(stdout: &str) -> Result<Vec<Finding>, String> {
+    let doc = parse_doc(stdout, "ruff")?;
+    let items = doc.as_array().map_or(&[][..], |a| a);
+    let mut findings = Vec::new();
+    for d in items {
+        let loc = d.get("location");
+        findings.push(Finding {
+            file: d
+                .get("filename")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            line: loc.and_then(|l| u32_field(l, "row")),
+            col: loc.and_then(|l| u32_field(l, "column")),
+            severity: d
+                .get("severity")
+                .and_then(Value::as_str)
+                .map(|s| normalize_word_severity(s).to_string()),
+            rule: d.get("code").and_then(Value::as_str).map(str::to_string),
+            message: d
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    Ok(findings)
+}
+
+/// mypy `--output json`: newline-delimited objects on stdout, each `{file, line,
+/// column, severity, message, code}`. A clean run emits nothing (no fallback).
+fn parse_mypy(stdout: &str) -> Result<Vec<Finding>, String> {
+    let mut findings = Vec::new();
+    let mut saw = false;
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        // A mypy diagnostic always carries a message + severity; skip anything else.
+        let (Some(message), Some(severity)) = (
+            v.get("message").and_then(Value::as_str),
+            v.get("severity").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        saw = true;
+        findings.push(Finding {
+            file: v.get("file").and_then(Value::as_str).map(str::to_string),
+            line: u32_field(&v, "line"),
+            col: u32_field(&v, "column"),
+            severity: Some(normalize_word_severity(severity).to_string()),
+            rule: v.get("code").and_then(Value::as_str).map(str::to_string),
+            message: message.to_string(),
+        });
+    }
+    if !saw && !stdout.trim().is_empty() && !looks_like_json_lines(stdout) {
+        return Err("no JSON diagnostics found".to_string());
+    }
+    Ok(findings)
+}
+
+/// Normalize a lowercase word severity (`error`/`warning`/`note`) shared by ruff
+/// and mypy; anything else becomes `note`.
+fn normalize_word_severity(s: &str) -> &'static str {
+    match s {
+        "error" => "error",
+        "warning" => "warning",
+        _ => "note",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,6 +777,38 @@ mod tests {
     const OSV_FIXTURE: &str = include_str!("distill/fixtures/osv-scanner.json");
     const GITLEAKS_FIXTURE: &str = include_str!("distill/fixtures/gitleaks.json");
     const ESLINT_FIXTURE: &str = include_str!("distill/fixtures/eslint.json");
+    const RUFF_FIXTURE: &str = include_str!("distill/fixtures/ruff.json");
+    const MYPY_FIXTURE: &str = include_str!("distill/fixtures/mypy.jsonl");
+
+    #[test]
+    fn ruff_fixture_parses() {
+        let (findings, _d) = apply(&spec("ruff"), RUFF_FIXTURE, "");
+        assert!(!findings.is_empty(), "ruff diagnostics yield findings");
+        let f = findings.first().unwrap();
+        assert_eq!(f.rule.as_deref(), Some("F401"));
+        assert_eq!(f.severity.as_deref(), Some("error"));
+        assert!(f.file.is_some() && f.line.is_some());
+    }
+
+    #[test]
+    fn mypy_fixture_parses_ndjson() {
+        let (findings, _d) = apply(&spec("mypy"), MYPY_FIXTURE, "");
+        assert!(!findings.is_empty(), "mypy diagnostics yield findings");
+        let f = findings.first().unwrap();
+        assert_eq!(f.severity.as_deref(), Some("error"));
+        assert_eq!(f.rule.as_deref(), Some("return-value"));
+        assert!(f.line.is_some());
+    }
+
+    #[test]
+    fn mypy_clean_run_is_empty_not_a_failure() {
+        let (findings, distilled) = apply(&spec("mypy"), "", "");
+        assert!(findings.is_empty());
+        assert!(
+            distilled.is_empty(),
+            "a clean mypy run produces no fallback text"
+        );
+    }
 
     #[test]
     fn relativize_strips_base_but_leaves_relative_and_outside_paths() {
@@ -944,6 +1050,18 @@ mod tests {
                 ".../node_modules/.bin/eslint --config ... -f json .",
                 "eslint",
                 ESLINT_FIXTURE,
+            ),
+            (
+                "python:api:ruff",
+                "ruff check --output-format json --config .../ruff.toml .",
+                "ruff",
+                RUFF_FIXTURE,
+            ),
+            (
+                "python:api:mypy",
+                "mypy --output json --config-file .../mypy.ini ... .",
+                "mypy",
+                MYPY_FIXTURE,
             ),
         ];
         let header = "grizzly-gate distilled output — VERBATIM surfaces from real captured tool output.\nFor each check: the literal terminal text, then the exact JSON an agent receives from get_check_output.\n";
