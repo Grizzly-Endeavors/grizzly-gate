@@ -101,6 +101,7 @@ fn parse(parser: &str, stdout: &str, stderr: &str) -> Result<Vec<Finding>, Strin
         "ruff" => parse_ruff(stdout),
         "mypy" => parse_mypy(stdout),
         "golangci-lint" => parse_golangci(stdout),
+        "ansible-lint" => parse_ansible_lint(stdout),
         other => Err(format!("unknown parser '{other}'")),
     }
 }
@@ -653,6 +654,61 @@ fn parse_mypy(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
+/// ansible-lint `-f json` (an alias for codeclimate): an array of `{check_name,
+/// description, severity, location:{path, positions:{begin:{line,column}}}}`.
+/// Some issues carry `location.lines.begin` (line only) instead of `positions`.
+fn parse_ansible_lint(stdout: &str) -> Result<Vec<Finding>, String> {
+    let doc = parse_doc(stdout, "ansible-lint")?;
+    let items = doc.as_array().map_or(&[][..], |a| a);
+    let mut findings = Vec::new();
+    for i in items {
+        let loc = i.get("location");
+        let begin = loc
+            .and_then(|l| l.get("positions"))
+            .and_then(|p| p.get("begin"));
+        let (line, col) = match begin {
+            Some(b) => (u32_field(b, "line"), u32_field(b, "column")),
+            None => (
+                loc.and_then(|l| l.get("lines"))
+                    .and_then(|ls| u32_field(ls, "begin")),
+                None,
+            ),
+        };
+        findings.push(Finding {
+            file: loc
+                .and_then(|l| l.get("path"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            line,
+            col,
+            severity: i
+                .get("severity")
+                .and_then(Value::as_str)
+                .map(|s| normalize_codeclimate_severity(s).to_string()),
+            rule: i
+                .get("check_name")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            message: i
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    Ok(findings)
+}
+
+/// codeclimate severity (`info`/`minor`/`major`/`critical`/`blocker`) onto the
+/// normalized set.
+fn normalize_codeclimate_severity(s: &str) -> &'static str {
+    match s {
+        "blocker" | "critical" | "major" => "error",
+        "minor" => "warning",
+        _ => "note",
+    }
+}
+
 /// Normalize a lowercase word severity (`error`/`warning`/`note`) shared by ruff,
 /// mypy, and golangci-lint; anything else becomes `note`.
 fn normalize_word_severity(s: &str) -> &'static str {
@@ -821,6 +877,18 @@ mod tests {
     const RUFF_FIXTURE: &str = include_str!("distill/fixtures/ruff.json");
     const MYPY_FIXTURE: &str = include_str!("distill/fixtures/mypy.jsonl");
     const GOLANGCI_FIXTURE: &str = include_str!("distill/fixtures/golangci-lint.json");
+    const ANSIBLE_FIXTURE: &str = include_str!("distill/fixtures/ansible-lint.json");
+
+    #[test]
+    fn ansible_lint_fixture_parses_codeclimate() {
+        let (findings, _d) = apply(&spec("ansible-lint"), ANSIBLE_FIXTURE, "");
+        assert_eq!(findings.len(), 4, "all issues parsed: {findings:?}");
+        let f = findings.first().unwrap();
+        assert_eq!(f.rule.as_deref(), Some("name[play]"));
+        assert_eq!(f.severity.as_deref(), Some("error"), "major -> error");
+        assert_eq!(f.file.as_deref(), Some("playbook.yml"));
+        assert!(f.line.is_some());
+    }
 
     #[test]
     fn golangci_fixture_parses_ignoring_trailing_summary() {
@@ -1122,6 +1190,12 @@ mod tests {
                 "golangci-lint run --output.json.path stdout -c .../.golangci.yml ./...",
                 "golangci-lint",
                 GOLANGCI_FIXTURE,
+            ),
+            (
+                "ansible:ansible-lint",
+                "ansible-lint --strict -f json -c .../ansible-lint.yml",
+                "ansible-lint",
+                ANSIBLE_FIXTURE,
             ),
         ];
         let header = "grizzly-gate distilled output — VERBATIM surfaces from real captured tool output.\nFor each check: the literal terminal text, then the exact JSON an agent receives from get_check_output.\n";

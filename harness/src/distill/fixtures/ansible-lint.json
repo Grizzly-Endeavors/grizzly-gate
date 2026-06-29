@@ -1,0 +1,56 @@
+[
+  {
+    "type": "issue",
+    "check_name": "name[play]",
+    "description": "All plays should be named.",
+    "severity": "major",
+    "location": {
+      "path": "playbook.yml",
+      "positions": {
+        "begin": {
+          "line": 1,
+          "column": 3
+        }
+      }
+    }
+  },
+  {
+    "type": "issue",
+    "check_name": "fqcn[action-core]",
+    "description": "Use FQCN for builtin module actions (command).",
+    "severity": "major",
+    "location": {
+      "path": "playbook.yml",
+      "positions": {
+        "begin": {
+          "line": 3,
+          "column": 7
+        }
+      }
+    }
+  },
+  {
+    "type": "issue",
+    "check_name": "name[missing]",
+    "description": "All tasks should be named.",
+    "severity": "major",
+    "location": {
+      "path": "playbook.yml",
+      "lines": {
+        "begin": 3
+      }
+    }
+  },
+  {
+    "type": "issue",
+    "check_name": "no-changed-when",
+    "description": "Commands should not change things if nothing needs doing.",
+    "severity": "major",
+    "location": {
+      "path": "playbook.yml",
+      "lines": {
+        "begin": 3
+      }
+    }
+  }
+]

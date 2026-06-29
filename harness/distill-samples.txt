@@ -139,3 +139,26 @@ For each check: the literal terminal text, then the exact JSON an agent receives
 
 --- agent (get_check_output JSON, verbatim) ---
 {"findings":[{"col":1,"file":"main.go","line":1,"message":"package-comments: should have a package comment","rule":"revive","severity":"warning"}],"has_more":false,"mode":"findings","total":1}
+
+================ ansible:ansible-lint ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: playbook.yml:1:3
+  rule: name[play]
+  message: All plays should be named.
+- severity: error
+  loc: playbook.yml:3:7
+  rule: fqcn[action-core]
+  message: Use FQCN for builtin module actions (command).
+- severity: error
+  loc: playbook.yml:3
+  rule: name[missing]
+  message: All tasks should be named.
+- severity: error
+  loc: playbook.yml:3
+  rule: no-changed-when
+  message: Commands should not change things if nothing needs doing.
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":3,"file":"playbook.yml","line":1,"message":"All plays should be named.","rule":"name[play]","severity":"error"},{"col":7,"file":"playbook.yml","line":3,"message":"Use FQCN for builtin module actions (command).","rule":"fqcn[action-core]","severity":"error"},{"file":"playbook.yml","line":3,"message":"All tasks should be named.","rule":"name[missing]","severity":"error"},{"file":"playbook.yml","line":3,"message":"Commands should not change things if nothing needs doing.","rule":"no-changed-when","severity":"error"}],"has_more":false,"mode":"findings","total":4}
