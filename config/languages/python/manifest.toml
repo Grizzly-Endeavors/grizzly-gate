@@ -28,13 +28,19 @@ cmd = "sh -c 'set -eu; uv venv .venv; if [ -f requirements.txt ]; then uv pip in
 
 [[checks]]
 name = "ruff"
-cmd = "ruff check --config {config}/ruff.toml ."
+# --output-format json emits diagnostics on stdout; ruff still exits non-zero on
+# any violation, so the verdict is unchanged.
+cmd = "ruff check --output-format json --config {config}/ruff.toml ."
+output = { parser = "ruff" }
 
 [[checks]]
 name = "mypy"
 # --python-executable points mypy's import resolution at the repo's installed
 # deps (in .venv) while mypy itself runs from its own pinned pipx venv.
-cmd = "mypy --config-file {config}/mypy.ini --python-executable .venv/bin/python ."
+# --output json emits newline-delimited diagnostics on stdout (mypy 1.11+); it
+# still exits non-zero on type errors, so the verdict is unchanged.
+cmd = "mypy --output json --config-file {config}/mypy.ini --python-executable .venv/bin/python ."
+output = { parser = "mypy" }
 
 [[checks]]
 name = "pytest"

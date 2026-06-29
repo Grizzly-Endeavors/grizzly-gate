@@ -42,4 +42,7 @@ scope = "source"
 # advisories with no fix are ignored fleet-wide via the harness-generated
 # osv-scanner.toml (see materialize_osv_config); the gate is the reviewer for
 # vulnerabilities, not dependency hygiene.
-cmd = 'osv-scanner scan source -r --config={config}/osv-scanner.toml --allow-no-lockfiles {source}'
+cmd = 'osv-scanner scan source -r --format=json --config={config}/osv-scanner.toml --allow-no-lockfiles {source}'
+# --format=json emits the report on stdout; osv-scanner still exits non-zero on
+# any vulnerability, so the verdict is unchanged. One finding per advisory group.
+output = { parser = "osv-scanner" }

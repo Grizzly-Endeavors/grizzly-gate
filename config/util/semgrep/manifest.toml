@@ -3,4 +3,8 @@
 # registry fetch at scan time — reproducible per gate version).
 name = "semgrep"
 scope = "source"
-cmd = "semgrep scan --error --quiet --config {config}/rules {source}"
+# --json emits machine-readable findings on stdout; --error keeps the failing
+# exit code (the verdict), so adding JSON is presentation-only. The harness
+# distills `results[]` into normalized findings.
+cmd = "semgrep scan --json --error --quiet --config {config}/rules {source}"
+output = { parser = "semgrep" }

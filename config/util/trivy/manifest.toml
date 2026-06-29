@@ -14,4 +14,7 @@
 # to that registry by construction.
 name = "trivy-image"
 scope = "image"
-cmd = "trivy image --quiet --exit-code 1 --config {config}/trivy.yaml --image-src remote --insecure {image}"
+# --format json emits the report on stdout; --exit-code 1 still drives the verdict.
+# Same vuln JSON shape as trivy-fs, so it shares the `trivy` parser.
+cmd = "trivy image --format json --quiet --exit-code 1 --config {config}/trivy.yaml --image-src remote --insecure {image}"
+output = { parser = "trivy" }

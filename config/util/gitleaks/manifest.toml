@@ -1,4 +1,10 @@
 # Secret scanner. Runs against the source tree on every invocation.
 name = "gitleaks"
 scope = "source"
-cmd = "gitleaks detect --source {source} --config {config}/gitleaks.toml --no-banner --redact --exit-code 1"
+# gitleaks writes its JSON report only to a real file (its `/dev/stdout` path is
+# unreliable), so write a temp file and `cat` it to stdout, preserving gitleaks'
+# exit code (the verdict). --redact keeps secret values out of the report; the
+# harness distills the array into normalized findings. Same `sh -c` wrapper shape
+# the node svelte-check check uses.
+cmd = "sh -c 'f=$(mktemp); gitleaks detect --source {source} --config {config}/gitleaks.toml --no-banner --redact --exit-code 1 --report-format json --report-path \"$f\"; ec=$?; cat \"$f\"; rm -f \"$f\"; exit $ec'"
+output = { parser = "gitleaks" }

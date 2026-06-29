@@ -39,8 +39,11 @@ name = "eslint"
 # Gate-owned binary so the toolchain is fixed. `eslint.config.mjs` is materialized
 # by the harness from `eslint.config.mjs.tmpl` at run time (the tree ships only the
 # `.tmpl` so the gate can gate itself — see that file's header and ADR-033).
-cmd = "{config}/node_modules/.bin/eslint --config {config}/eslint.config.mjs --no-config-lookup --no-error-on-unmatched-pattern ."
+cmd = "{config}/node_modules/.bin/eslint --config {config}/eslint.config.mjs --no-config-lookup --no-error-on-unmatched-pattern -f json ."
 env = { GATE_TSCONFIG = "{tsconfig}", GATE_SKIP_DIRS = "{skip_dirs}" }
+# -f json emits the findings array on stdout; eslint still exits non-zero on any
+# error regardless of formatter, so the verdict is unchanged.
+output = { parser = "eslint" }
 
 [[checks]]
 name = "tsc"

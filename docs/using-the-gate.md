@@ -53,36 +53,44 @@ When phase 1 fails, the gate prints every problem at once (no fix-one-rerun chur
 | `unsupported` | Code in a language the gate has no adapter for (Ruby, Java, …). | The gate cannot check it, so it cannot pass. Remove the code, or ask Ops to add an adapter (a deliberate two-part change — see [ADR-029](decisions/029-gate-config-honest-map.md)). |
 | `ts-without-tsconfig` | A node project contains TypeScript but declares no `tsconfig` (also fires for a `.svelte` component using `<script lang="ts">`). | Add `"tsconfig": "<path>"` to that project. |
 
-When phase 2 fails, the gate prints a `FAILURES` block replaying each failing check's output, then the verdict. The fix is whatever the tool says — and the full, untruncated output is always in the report (below).
+When phase 2 fails, the gate prints a `FAILURES` block replaying each failing check's **distilled** output (structured findings rendered as a compact YAML-style block, or noise-filtered text for tools the gate doesn't parse structurally), then the verdict. The fix is whatever the tool says — and the full, untruncated raw output is always in the report (below).
 
 ## The machine-readable report (for agents)
 
-Every run writes `grizzly-gate-report/report.json` (override the directory with `--report-dir`). It holds the **full, untruncated** output of every check and every honest-map violation — so an automated fix loop (or a human) can pull *one* failing check instead of scrolling the whole log. The terminal's `FAILURES` block is the only place output is ever truncated, and it always points back here.
+Every run writes `grizzly-gate-report/report.json` (override the directory with `--report-dir`). For each check it carries three views: structured **`findings`** (a normalized `{file, line, col, severity, rule, message}` per diagnostic, for every tool the gate parses — clippy, eslint, ruff, mypy, golangci-lint, semgrep, trivy, osv-scanner, gitleaks, cargo-deny, ansible-lint), the focused **`distilled`** text surface, and the **full, untruncated `output`** (raw combined stdout+stderr — the durable audit record). So an automated fix loop (or a human) can query findings, or pull *one* failing check, instead of scrolling the whole log. Reshaping is presentation-only: `ok`/`exit_code` always come from the tool's process status, never from the parse. The terminal's `FAILURES` block is the only place output is ever truncated, and it always points back here.
 
-Shape:
+Shape (`schema: 2`):
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "verdict": "fail",
   "failed_phase": "checks",
   "honest_map": { "ok": true, "violations": [] },
   "checks": [
     { "label": "rust:clippy", "language": "rust", "project": ".",
       "cmd": "cargo clippy ...", "ok": false, "exit_code": 101,
-      "duration_secs": 2.1, "output": "<full combined stdout+stderr>" }
+      "duration_secs": 2.1,
+      "findings": [
+        { "file": "src/main.rs", "line": 42, "col": 9, "severity": "error",
+          "rule": "clippy::unwrap_used", "message": "used `unwrap()` ..." }
+      ],
+      "output": "<full combined stdout+stderr>" }
   ],
   "query_hints": ["..."]
 }
 ```
 
-Useful `jq` queries (also embedded in the report as `query_hints`):
+`findings` is omitted for a text-only tool (tsc, pytest, go test, govulncheck, yamllint, …); `distilled` is omitted when it equals the raw output. Useful `jq` queries (also embedded in the report as `query_hints`):
 
 ```sh
 # which checks failed
 jq -r '.checks[] | select(.ok==false) | .label' grizzly-gate-report/report.json
 
-# the full output of one failing check
+# the structured findings of one failing check
+jq -c '.checks[] | select(.label=="rust:clippy") | .findings[]' grizzly-gate-report/report.json
+
+# the full raw output of one failing check (the durable record)
 jq -r '.checks[] | select(.label=="rust:clippy") | .output' grizzly-gate-report/report.json
 
 # every honest-map violation

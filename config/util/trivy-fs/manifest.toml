@@ -5,4 +5,6 @@
 # pre-build, independent of whether a dep ends up in the final image.
 name = "trivy-fs"
 scope = "source"
-cmd = "trivy fs --quiet --no-progress --exit-code 1 --config {config}/trivy.yaml {source}"
+# --format json emits the report on stdout; --exit-code 1 still drives the verdict.
+cmd = "trivy fs --format json --quiet --no-progress --exit-code 1 --config {config}/trivy.yaml {source}"
+output = { parser = "trivy" }

@@ -1,0 +1,2 @@
+{"fields":{"code":"banned","graphs":[{"Krate":{"name":"anyhow","version":"1.0.102"},"parents":[{"Krate":{"name":"grizzly-gate","version":"0.6.0"}}]}],"labels":[{"column":19,"line":3,"message":"banned here","span":"anyhow"}],"message":"crate 'anyhow = 1.0.102' is explicitly banned","severity":"error"},"type":"diagnostic"}
+{"fields":{"bans":{"errors":1,"helps":0,"notes":0,"warnings":0}},"type":"summary"}

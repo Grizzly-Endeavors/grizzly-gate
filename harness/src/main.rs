@@ -8,6 +8,7 @@
 
 mod config;
 mod detect;
+mod distill;
 mod gateconfig;
 mod mcp;
 mod report;
@@ -127,6 +128,10 @@ struct StepResult {
     /// Process exit code, or `None` if the tool could not be spawned/parsed.
     exit_code: Option<i32>,
     secs: f64,
+    /// Normalized findings distilled from a structured tool (empty otherwise).
+    findings: Vec<report::Finding>,
+    /// Focused text surface — what the terminal and MCP show by default.
+    distilled: String,
     /// Full, untruncated combined stdout+stderr — the durable record copied
     /// verbatim into `report.json`.
     output: String,
@@ -143,6 +148,8 @@ impl StepResult {
             ok: self.ok,
             exit_code: self.exit_code,
             duration_secs: self.secs,
+            findings: self.findings.clone(),
+            distilled: self.distilled.clone(),
             output: self.output.clone(),
         }
     }
@@ -343,7 +350,10 @@ fn print_failures(results: &[StepResult], report: &Report, report_path: &Path) {
     println!("\n──────────────────────────── FAILURES ────────────────────────────");
     for r in results.iter().filter(|r| !r.ok) {
         println!("\n▼ {}", r.label);
-        let (tail, truncated) = tail_cap(&r.output, FAILURE_TAIL_LINES, FAILURE_TAIL_BYTES);
+        // Show the focused surface (findings rendered at display time, or the
+        // distilled text); the full raw output is still in report.json.
+        let display = distill::display_text(&r.findings, &r.distilled);
+        let (tail, truncated) = tail_cap(&display, FAILURE_TAIL_LINES, FAILURE_TAIL_BYTES);
         print!("{tail}");
         if !tail.is_empty() && !tail.ends_with('\n') {
             println!();
@@ -469,6 +479,7 @@ fn run_checks(
                 &project.abs_path,
                 subst,
                 &check.env,
+                &check.output,
             )?;
             result.language = Some(adapter.name.clone());
             result.project = Some(where_.clone());
@@ -505,10 +516,26 @@ fn run_checks(
         let label = format!("scan:{}", scanner.name);
         match scanner.scope {
             Scope::Source => {
-                results.push(run(log, &label, &scanner.cmd, source, subst, &scanner.env)?);
+                results.push(run(
+                    log,
+                    &label,
+                    &scanner.cmd,
+                    source,
+                    subst,
+                    &scanner.env,
+                    &scanner.output,
+                )?);
             }
             Scope::Image if image.is_some() => {
-                results.push(run(log, &label, &scanner.cmd, source, subst, &scanner.env)?);
+                results.push(run(
+                    log,
+                    &label,
+                    &scanner.cmd,
+                    source,
+                    subst,
+                    &scanner.env,
+                    &scanner.output,
+                )?);
             }
             Scope::Image => writeln!(
                 log,
@@ -830,6 +857,7 @@ fn run(
     cwd: &Path,
     subst: Subst,
     env: &BTreeMap<String, String>,
+    out_spec: &config::OutputSpec,
 ) -> Result<StepResult> {
     let apply = |s: &str| -> String {
         let mut r = s.to_string();
@@ -866,6 +894,8 @@ fn run(
             ok: false,
             exit_code: None,
             secs: 0.0,
+            findings: Vec::new(),
+            distilled: msg.clone(),
             output: msg,
         });
     };
@@ -884,20 +914,38 @@ fn run(
     let output = command.output();
     let secs = start.elapsed().as_secs_f64();
 
-    let (ok, exit_code, captured) = match output {
+    // `captured` is the durable raw record (stdout then stderr, verbatim).
+    // `findings`/`distilled` are the focused surface; distillation reads stdout
+    // and stderr separately so a structured parser sees only the JSON on stdout.
+    // The verdict (`ok`/`exit_code`) is the process status — never the parse.
+    let (ok, exit_code, findings, distilled, captured) = match output {
         Ok(o) => {
-            let mut buf = String::from_utf8_lossy(&o.stdout).into_owned();
-            buf.push_str(&String::from_utf8_lossy(&o.stderr));
+            let out = String::from_utf8_lossy(&o.stdout);
+            let err = String::from_utf8_lossy(&o.stderr);
+            let mut buf = out.clone().into_owned();
+            buf.push_str(&err);
             write!(log, "{buf}")?;
             if !buf.is_empty() && !buf.ends_with('\n') {
                 writeln!(log)?;
             }
-            (o.status.success(), o.status.code(), buf)
+            let (mut findings, distilled) = distill::apply(out_spec, &out, &err);
+            // Normalize tool-reported paths to repo-relative by stripping the
+            // directory the tool ran in (cwd: the project dir for adapters, the
+            // source root for scanners), so eslint/semgrep absolutes match the
+            // relative paths clippy/trivy emit.
+            distill::relativize(&mut findings, &cwd.to_string_lossy());
+            (
+                o.status.success(),
+                o.status.code(),
+                findings,
+                distilled,
+                buf,
+            )
         }
         Err(e) => {
             let msg = format!("failed to spawn {program}: {e}");
             eprintln!("   ! {msg}");
-            (false, None, msg)
+            (false, None, Vec::new(), msg.clone(), msg)
         }
     };
     Ok(StepResult {
@@ -908,6 +956,8 @@ fn run(
         ok,
         exit_code,
         secs,
+        findings,
+        distilled,
         output: captured,
     })
 }
@@ -955,6 +1005,7 @@ mod tests {
             Path::new("."),
             NO_SUBST,
             &env,
+            &config::OutputSpec::default(),
         )
         .expect("logging to a sink cannot fail");
         assert!(!r.ok, "a non-zero exit must mark the step failed");
@@ -987,6 +1038,7 @@ mod tests {
             Path::new("."),
             subst,
             &env,
+            &config::OutputSpec::default(),
         )
         .expect("logging to a sink cannot fail");
         assert!(r.ok, "echo succeeds: {:?}", r.output);

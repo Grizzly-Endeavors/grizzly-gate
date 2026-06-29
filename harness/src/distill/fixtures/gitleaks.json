@@ -1,0 +1,42 @@
+[
+  {
+    "RuleID": "stripe-access-token",
+    "Description": "Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data.",
+    "StartLine": 2,
+    "EndLine": 2,
+    "StartColumn": 9,
+    "EndColumn": 49,
+    "Match": "REDACTED\"",
+    "Secret": "REDACTED",
+    "File": "config.ini",
+    "SymlinkFile": "",
+    "Commit": "c8b8d84968a1eefbaddb29a507b18c0bec2072cc",
+    "Entropy": 4.403056,
+    "Author": "t",
+    "Email": "t@t.t",
+    "Date": "2026-06-29T15:38:00Z",
+    "Message": "seed",
+    "Tags": [],
+    "Fingerprint": "c8b8d84968a1eefbaddb29a507b18c0bec2072cc:config.ini:stripe-access-token:2"
+  },
+  {
+    "RuleID": "github-pat",
+    "Description": "Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.",
+    "StartLine": 1,
+    "EndLine": 1,
+    "StartColumn": 16,
+    "EndColumn": 55,
+    "Match": "REDACTED",
+    "Secret": "REDACTED",
+    "File": "config.ini",
+    "SymlinkFile": "",
+    "Commit": "c8b8d84968a1eefbaddb29a507b18c0bec2072cc",
+    "Entropy": 4.921928,
+    "Author": "t",
+    "Email": "t@t.t",
+    "Date": "2026-06-29T15:38:00Z",
+    "Message": "seed",
+    "Tags": [],
+    "Fingerprint": "c8b8d84968a1eefbaddb29a507b18c0bec2072cc:config.ini:github-pat:1"
+  }
+]

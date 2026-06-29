@@ -1,0 +1,164 @@
+grizzly-gate distilled output — VERBATIM surfaces from real captured tool output.
+For each check: the literal terminal text, then the exact JSON an agent receives from get_check_output.
+
+================ rust:harness:clippy ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: warning
+  loc: src/main.rs:3:13
+  rule: clippy::unnecessary_literal_unwrap
+  message: used `unwrap()` on `None` value
+- severity: error
+  loc: src/main.rs:3:13
+  rule: clippy::unwrap_used
+  message: used `unwrap()` on an `Option` value
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":13,"file":"src/main.rs","line":3,"message":"used `unwrap()` on `None` value","rule":"clippy::unnecessary_literal_unwrap","severity":"warning"},{"col":13,"file":"src/main.rs","line":3,"message":"used `unwrap()` on an `Option` value","rule":"clippy::unwrap_used","severity":"error"}],"has_more":false,"mode":"findings","total":2}
+
+================ rust:harness:deny ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  rule: banned
+  message: crate 'anyhow = 1.0.102' is explicitly banned
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"message":"crate 'anyhow = 1.0.102' is explicitly banned","rule":"banned","severity":"error"}],"has_more":false,"mode":"findings","total":1}
+
+================ scan:semgrep ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: app.py:3:12
+  rule: python.lang.security.audit.dangerous-subprocess-use-audit
+  message: Detected subprocess function 'Popen' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+- severity: error
+  loc: app.py:3:40
+  rule: python.lang.security.audit.subprocess-shell-true
+  message: Found 'subprocess' function 'Popen' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":12,"file":"app.py","line":3,"message":"Detected subprocess function 'Popen' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.","rule":"python.lang.security.audit.dangerous-subprocess-use-audit","severity":"error"},{"col":40,"file":"app.py","line":3,"message":"Found 'subprocess' function 'Popen' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.","rule":"python.lang.security.audit.subprocess-shell-true","severity":"error"}],"has_more":false,"mode":"findings","total":2}
+
+================ scan:trivy-fs ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: requirements.txt
+  rule: CVE-2019-14234
+  message: Django 2.2.0: Django: SQL injection possibility in key and index lookups for JSONField/HStoreField (fix: 1.11.23, 2.1.11, 2.2.4)
+- severity: error
+  loc: requirements.txt
+  rule: CVE-2019-19844
+  message: Django 2.2.0: Django: crafted email address allows account takeover (fix: 1.11.27, 2.2.9, 3.0.1)
+- severity: error
+  loc: requirements.txt
+  rule: CVE-2020-7471
+  message: Django 2.2.0: django: potential SQL injection via StringAgg(delimiter) (fix: 1.11.28, 2.2.10, 3.0.3)
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"file":"requirements.txt","message":"Django 2.2.0: Django: SQL injection possibility in key and index lookups for JSONField/HStoreField (fix: 1.11.23, 2.1.11, 2.2.4)","rule":"CVE-2019-14234","severity":"error"},{"file":"requirements.txt","message":"Django 2.2.0: Django: crafted email address allows account takeover (fix: 1.11.27, 2.2.9, 3.0.1)","rule":"CVE-2019-19844","severity":"error"},{"file":"requirements.txt","message":"Django 2.2.0: django: potential SQL injection via StringAgg(delimiter) (fix: 1.11.28, 2.2.10, 3.0.3)","rule":"CVE-2020-7471","severity":"error"}],"has_more":false,"mode":"findings","total":3}
+
+================ scan:osv-scanner ================
+
+--- terminal (FAILURES block, verbatim) ---
+- rule: PYSEC-2019-10
+  message: django 2.2.0 (PyPI): PYSEC-2019-10, GHSA-6c7v-2f49-8h26 [CVSS 6.9]
+- rule: PYSEC-2019-11
+  message: django 2.2.0 (PyPI): PYSEC-2019-11, GHSA-c4qh-4vgv-qc6g [CVSS 8.7]
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"message":"django 2.2.0 (PyPI): PYSEC-2019-10, GHSA-6c7v-2f49-8h26 [CVSS 6.9]","rule":"PYSEC-2019-10"},{"message":"django 2.2.0 (PyPI): PYSEC-2019-11, GHSA-c4qh-4vgv-qc6g [CVSS 8.7]","rule":"PYSEC-2019-11"}],"has_more":false,"mode":"findings","total":2}
+
+================ scan:gitleaks ================
+
+--- terminal (FAILURES block, verbatim) ---
+- loc: config.ini:2:9
+  rule: stripe-access-token
+  message: Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data.
+- loc: config.ini:1:16
+  rule: github-pat
+  message: Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":9,"file":"config.ini","line":2,"message":"Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data.","rule":"stripe-access-token"},{"col":16,"file":"config.ini","line":1,"message":"Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.","rule":"github-pat"}],"has_more":false,"mode":"findings","total":2}
+
+================ node:web:eslint ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: index.js:2:3
+  rule: no-var
+  message: Unexpected var, use let or const instead.
+- severity: error
+  loc: index.js:2:7
+  rule: no-unused-vars
+  message: 'x' is assigned a value but never used.
+- severity: error
+  loc: index.js:3:9
+  rule: eqeqeq
+  message: Expected '===' and instead saw '=='.
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":3,"file":"index.js","line":2,"message":"Unexpected var, use let or const instead.","rule":"no-var","severity":"error"},{"col":7,"file":"index.js","line":2,"message":"'x' is assigned a value but never used.","rule":"no-unused-vars","severity":"error"},{"col":9,"file":"index.js","line":3,"message":"Expected '===' and instead saw '=='.","rule":"eqeqeq","severity":"error"}],"has_more":false,"mode":"findings","total":3}
+
+================ python:api:ruff ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: bad.py:1:8
+  rule: F401
+  message: `os` imported but unused
+- severity: error
+  loc: bad.py:2:8
+  rule: F401
+  message: `sys` imported but unused
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":8,"file":"bad.py","line":1,"message":"`os` imported but unused","rule":"F401","severity":"error"},{"col":8,"file":"bad.py","line":2,"message":"`sys` imported but unused","rule":"F401","severity":"error"}],"has_more":false,"mode":"findings","total":2}
+
+================ python:api:mypy ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: src/bad.py:6:11
+  rule: return-value
+  message: Incompatible return value type (got "int", expected "str")
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":11,"file":"src/bad.py","line":6,"message":"Incompatible return value type (got \"int\", expected \"str\")","rule":"return-value","severity":"error"}],"has_more":false,"mode":"findings","total":1}
+
+================ go:svc:lint ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: warning
+  loc: main.go:1:1
+  rule: revive
+  message: package-comments: should have a package comment
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":1,"file":"main.go","line":1,"message":"package-comments: should have a package comment","rule":"revive","severity":"warning"}],"has_more":false,"mode":"findings","total":1}
+
+================ ansible:ansible-lint ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: playbook.yml:1:3
+  rule: name[play]
+  message: All plays should be named.
+- severity: error
+  loc: playbook.yml:3:7
+  rule: fqcn[action-core]
+  message: Use FQCN for builtin module actions (command).
+- severity: error
+  loc: playbook.yml:3
+  rule: name[missing]
+  message: All tasks should be named.
+- severity: error
+  loc: playbook.yml:3
+  rule: no-changed-when
+  message: Commands should not change things if nothing needs doing.
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":3,"file":"playbook.yml","line":1,"message":"All plays should be named.","rule":"name[play]","severity":"error"},{"col":7,"file":"playbook.yml","line":3,"message":"Use FQCN for builtin module actions (command).","rule":"fqcn[action-core]","severity":"error"},{"file":"playbook.yml","line":3,"message":"All tasks should be named.","rule":"name[missing]","severity":"error"},{"file":"playbook.yml","line":3,"message":"Commands should not change things if nothing needs doing.","rule":"no-changed-when","severity":"error"}],"has_more":false,"mode":"findings","total":4}

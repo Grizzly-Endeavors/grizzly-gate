@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 /// Schema version of the emitted report. Bumped only on a breaking shape change
 /// so a consumer can refuse an unknown layout rather than misread it.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 /// Report filename written inside the report dir.
 pub const FILE: &str = "report.json";
@@ -84,8 +84,30 @@ pub enum ViolationClass {
     TsWithoutTsconfig,
 }
 
+/// One normalized finding distilled from a structured tool's output. Every field
+/// but `message` is optional because tools vary in what they report; the harness
+/// maps each tool's native shape onto this common schema (see [`crate::distill`]).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Finding {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub col: Option<u32>,
+    /// Normalized severity: `error`, `warning`, or `note`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    /// Tool rule / lint / advisory id (e.g. `clippy::unwrap_used`, `RUSTSEC-…`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
+    pub message: String,
+}
+
 /// One executed check (language adapter step or scanner). `output` is the full,
-/// untruncated combined stdout+stderr — this is the durable record.
+/// untruncated combined stdout+stderr — this is the durable audit record.
+/// `findings`/`distilled` are the focused, presentation-only surface; they never
+/// influence `ok` (which is the process exit status).
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Check {
     pub label: String,
@@ -98,6 +120,16 @@ pub struct Check {
     /// Process exit code, or `None` if the tool could not be spawned/parsed.
     pub exit_code: Option<i32>,
     pub duration_secs: f64,
+    /// Normalized findings parsed from a structured tool; empty for text tools
+    /// or when no parser is configured.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<Finding>,
+    /// Focused text surface for text-path tools (ANSI-stripped + noise-filtered)
+    /// or a parse-failure fallback. Empty for structured tools — their surface is
+    /// `findings`, rendered to text only at display time — and omitted from the
+    /// report when empty. Equals `output` when no `[output]` spec is configured.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub distilled: String,
     pub output: String,
 }
 
@@ -261,6 +293,8 @@ mod tests {
             ok: false,
             exit_code: Some(101),
             duration_secs: 2.1,
+            findings: Vec::new(),
+            distilled: "error: this is the full clippy output\n".into(),
             output: "error: this is the full clippy output\n".into(),
         }]);
         let path = report.write(&dir).unwrap();

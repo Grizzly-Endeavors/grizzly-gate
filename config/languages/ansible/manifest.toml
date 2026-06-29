@@ -6,4 +6,7 @@ marker = "ansible"
 [[checks]]
 name = "ansible-lint"
 # --strict: warnings are treated as failures — warnings are blockers.
-cmd = "ansible-lint --strict -c {config}/ansible-lint.yml"
+# -f json (an alias for codeclimate) emits findings on stdout; ansible-lint still
+# exits non-zero on any violation, so the verdict is unchanged.
+cmd = "ansible-lint --strict -f json -c {config}/ansible-lint.yml"
+output = { parser = "ansible-lint" }
