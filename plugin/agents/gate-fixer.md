@@ -18,18 +18,19 @@ Prefer the **`grizzly-gate` MCP tools** — they keep each check's (often huge) 
 1. Call **`run_gate`** to run the gate and get a *compact* verdict: `verdict`, `failed_phase`, `checks_total`, `checks_failed`, `failing_check_labels`, `honest_map_violations`. (CLI fallback: run `grizzly-gate` from the repo root, then read `grizzly-gate-report/report.json`.)
 2. Triage by `failed_phase`. Phase 1 (`honest-map`) must pass completely before phase 2 (`checks`) runs at all — so fix honest-map violations first.
    - For honest-map detail, call **`list_honest_map_violations`** (full `{class, language, path, reason}`).
-   - For a failing check, call **`get_check_output`** with its `label`; page through it with `offset_lines`/`limit_lines` when `has_more` is true. Pull output only for the labels you're actually fixing — don't fetch everything up front.
+   - For a failing check, call **`get_check_output`** with its `label`. For tools the gate parses structurally it returns normalized `findings` (`{file, line, col, severity, rule, message}`) — optionally narrow with `severity`; for other tools it returns the distilled text. Pass `raw=true` only if you need the verbatim tool output. Page with `offset_lines`/`limit_lines` when `has_more` is true, and pull output only for the labels you're actually fixing — don't fetch everything up front.
 3. Apply the fixes (below). Make the smallest change that makes the repo honest and correct.
 4. Call `run_gate` again. Repeat until `verdict == "pass"`. Report what you changed and why.
 
 ## Report shape
 
-`run_gate` / the report carry, per failing check: `label` (e.g. `rust:clippy`), `language`, `project`, `cmd`, `ok`, `exit_code`, and the full `output`. Honest-map violations carry `class`, `language`, `path`, `reason`.
+`run_gate` / the report carry, per failing check: `label` (e.g. `rust:clippy`), `language`, `project`, `cmd`, `ok`, `exit_code`, structured `findings` (`[{file, line, col, severity, rule, message}]`, for tools the gate parses), and the full raw `output`. Honest-map violations carry `class`, `language`, `path`, `reason`.
 
 CLI-fallback queries (also embedded in the report as `query_hints`):
 
 ```sh
 jq -r '.checks[] | select(.ok==false) | .label' grizzly-gate-report/report.json
+jq -c '.checks[] | select(.label=="rust:clippy") | .findings[]' grizzly-gate-report/report.json
 jq -r '.checks[] | select(.label=="rust:clippy") | .output' grizzly-gate-report/report.json
 jq -c '.honest_map.violations[]' grizzly-gate-report/report.json
 ```
@@ -43,6 +44,6 @@ jq -c '.honest_map.violations[]' grizzly-gate-report/report.json
 
 ## Check failures
 
-Phase 2 replays each failing check's full output in `.output`. The fix is whatever the tool says — clippy/eslint/ruff lints, type errors, failing tests, SAST (semgrep) findings, secrets (gitleaks), dependency CVEs (osv-scanner). Fix the underlying code or, for a CVE, bump the dependency. For a genuinely-wrong lint in a specific spot, use a scoped suppression with a written reason (`#[expect(..., reason = "...")]` or the language equivalent) — never a blanket allow.
+Phase 2 surfaces each failing check's findings (structured `findings`, or the distilled text / raw `.output`). The fix is whatever the tool says — clippy/eslint/ruff lints, type errors, failing tests, SAST (semgrep) findings, secrets (gitleaks), dependency CVEs (osv-scanner). Fix the underlying code or, for a CVE, bump the dependency. For a genuinely-wrong lint in a specific spot, use a scoped suppression with a written reason (`#[expect(..., reason = "...")]` or the language equivalent) — never a blanket allow.
 
 A `python:deps` failure (or a `node:deps`/`npm ci` failure) means the repo's *declared dependencies don't install* — the gate installs them so mypy/pytest can resolve real types and imports. Fix the repo's dependency manifest (`requirements.txt`/`pyproject.toml`/lockfile) so the install succeeds; never strip the dep or skip the step. If a Python repo's first-party imports still fail after a clean install, the repo is a loose tree that needs either proper packaging (`[project]`/`[build-system]` in `pyproject.toml`) or a rootdir-importable layout.
