@@ -100,6 +100,7 @@ fn parse(parser: &str, stdout: &str, stderr: &str) -> Result<Vec<Finding>, Strin
         "eslint" => parse_eslint(stdout),
         "ruff" => parse_ruff(stdout),
         "mypy" => parse_mypy(stdout),
+        "golangci-lint" => parse_golangci(stdout),
         other => Err(format!("unknown parser '{other}'")),
     }
 }
@@ -356,14 +357,20 @@ fn looks_like_json_lines(s: &str) -> bool {
 
 // --- Single-document scanner parsers ----------------------------------------
 
-/// Parse a scanner's whole-stdout JSON document. Empty stdout is a parse failure
-/// (the tool produced no report), surfaced via the fail-closed marker.
+/// Parse the first JSON document from a tool's stdout, ignoring any trailing
+/// text — golangci-lint appends a human summary after its JSON. Empty stdout is
+/// a parse failure (the tool produced no report), surfaced via the marker.
 fn parse_doc(stdout: &str, tool: &str) -> Result<Value, String> {
-    let trimmed = stdout.trim();
+    let trimmed = stdout.trim_start();
     if trimmed.is_empty() {
         return Err(format!("{tool} produced no JSON on stdout"));
     }
-    serde_json::from_str(trimmed).map_err(|e| format!("{tool} JSON parse error: {e}"))
+    let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
+    match stream.next() {
+        Some(Ok(v)) => Ok(v),
+        Some(Err(e)) => Err(format!("{tool} JSON parse error: {e}")),
+        None => Err(format!("{tool} produced no JSON on stdout")),
+    }
 }
 
 /// Borrow `v[key]` as a slice of values, or an empty slice when absent/not an
@@ -646,14 +653,48 @@ fn parse_mypy(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// Normalize a lowercase word severity (`error`/`warning`/`note`) shared by ruff
-/// and mypy; anything else becomes `note`.
+/// Normalize a lowercase word severity (`error`/`warning`/`note`) shared by ruff,
+/// mypy, and golangci-lint; anything else becomes `note`.
 fn normalize_word_severity(s: &str) -> &'static str {
     match s {
         "error" => "error",
         "warning" => "warning",
         _ => "note",
     }
+}
+
+/// golangci-lint `--output.json.path stdout`: an `{Issues:[{FromLinter, Text,
+/// Severity, Pos:{Filename,Line,Column}}], Report}` document (with a trailing
+/// human summary `parse_doc` discards). Empty `Severity` is omitted.
+fn parse_golangci(stdout: &str) -> Result<Vec<Finding>, String> {
+    let doc = parse_doc(stdout, "golangci-lint")?;
+    let mut findings = Vec::new();
+    for i in arr(&doc, "Issues") {
+        let pos = i.get("Pos");
+        findings.push(Finding {
+            file: pos
+                .and_then(|p| p.get("Filename"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            line: pos.and_then(|p| u32_field(p, "Line")),
+            col: pos.and_then(|p| u32_field(p, "Column")),
+            severity: i
+                .get("Severity")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(|s| normalize_word_severity(s).to_string()),
+            rule: i
+                .get("FromLinter")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            message: i
+                .get("Text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    Ok(findings)
 }
 
 #[cfg(test)]
@@ -779,6 +820,19 @@ mod tests {
     const ESLINT_FIXTURE: &str = include_str!("distill/fixtures/eslint.json");
     const RUFF_FIXTURE: &str = include_str!("distill/fixtures/ruff.json");
     const MYPY_FIXTURE: &str = include_str!("distill/fixtures/mypy.jsonl");
+    const GOLANGCI_FIXTURE: &str = include_str!("distill/fixtures/golangci-lint.json");
+
+    #[test]
+    fn golangci_fixture_parses_ignoring_trailing_summary() {
+        // The fixture has golangci's human summary appended after the JSON; the
+        // parser must read the first JSON value and ignore the trailing text.
+        let (findings, _d) = apply(&spec("golangci-lint"), GOLANGCI_FIXTURE, "");
+        assert_eq!(findings.len(), 1, "trailing summary ignored: {findings:?}");
+        let f = findings.first().unwrap();
+        assert_eq!(f.rule.as_deref(), Some("revive"));
+        assert_eq!(f.severity.as_deref(), Some("warning"));
+        assert!(f.line.is_some());
+    }
 
     #[test]
     fn ruff_fixture_parses() {
@@ -1062,6 +1116,12 @@ mod tests {
                 "mypy --output json --config-file .../mypy.ini ... .",
                 "mypy",
                 MYPY_FIXTURE,
+            ),
+            (
+                "go:svc:lint",
+                "golangci-lint run --output.json.path stdout -c .../.golangci.yml ./...",
+                "golangci-lint",
+                GOLANGCI_FIXTURE,
             ),
         ];
         let header = "grizzly-gate distilled output — VERBATIM surfaces from real captured tool output.\nFor each check: the literal terminal text, then the exact JSON an agent receives from get_check_output.\n";

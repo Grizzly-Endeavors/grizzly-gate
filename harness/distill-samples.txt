@@ -128,3 +128,14 @@ For each check: the literal terminal text, then the exact JSON an agent receives
 
 --- agent (get_check_output JSON, verbatim) ---
 {"findings":[{"col":11,"file":"src/bad.py","line":6,"message":"Incompatible return value type (got \"int\", expected \"str\")","rule":"return-value","severity":"error"}],"has_more":false,"mode":"findings","total":1}
+
+================ go:svc:lint ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: warning
+  loc: main.go:1:1
+  rule: revive
+  message: package-comments: should have a package comment
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":1,"file":"main.go","line":1,"message":"package-comments: should have a package comment","rule":"revive","severity":"warning"}],"has_more":false,"mode":"findings","total":1}

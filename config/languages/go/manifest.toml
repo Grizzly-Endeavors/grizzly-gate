@@ -27,7 +27,14 @@ name = "lint"
 # The clippy analog: a maximal linter set (errcheck/gosec/staticcheck/revive/
 # gocritic/…) with all findings blocking. `-c` forces the gate's `.golangci.yml`
 # and disables discovery of the repo's own config — the config-forcing guarantee.
-cmd = "golangci-lint run -c {config}/.golangci.yml ./..."
+cmd = "golangci-lint run --path-mode abs --output.json.path stdout -c {config}/.golangci.yml ./..."
+# --output.json.path stdout emits the issue document on stdout (golangci appends
+# a short human summary the harness ignores); it still exits non-zero on any
+# finding, so the verdict is unchanged. --path-mode abs is REQUIRED: golangci v2
+# otherwise reports paths relative to the CONFIG file's dir, and the gate forces
+# a config deep under /etc/grizzly-gate, yielding `../../../../../src/...` paths.
+# With abs paths the harness's relativize() strips the project dir cleanly.
+output = { parser = "golangci-lint" }
 
 [[checks]]
 name = "vulncheck"
