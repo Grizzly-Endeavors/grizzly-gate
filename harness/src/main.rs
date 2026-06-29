@@ -928,7 +928,12 @@ fn run(
             if !buf.is_empty() && !buf.ends_with('\n') {
                 writeln!(log)?;
             }
-            let (findings, distilled) = distill::apply(out_spec, &out, &err);
+            let (mut findings, distilled) = distill::apply(out_spec, &out, &err);
+            // Normalize tool-reported paths to repo-relative by stripping the
+            // directory the tool ran in (cwd: the project dir for adapters, the
+            // source root for scanners), so eslint/semgrep absolutes match the
+            // relative paths clippy/trivy emit.
+            distill::relativize(&mut findings, &cwd.to_string_lossy());
             (
                 o.status.success(),
                 o.status.code(),

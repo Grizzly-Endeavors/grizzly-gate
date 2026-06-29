@@ -30,16 +30,16 @@ For each check: the literal terminal text, then the exact JSON an agent receives
 
 --- terminal (FAILURES block, verbatim) ---
 - severity: error
-  loc: /src/app.py:3:12
+  loc: app.py:3:12
   rule: python.lang.security.audit.dangerous-subprocess-use-audit
   message: Detected subprocess function 'Popen' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
 - severity: error
-  loc: /src/app.py:3:40
+  loc: app.py:3:40
   rule: python.lang.security.audit.subprocess-shell-true
   message: Found 'subprocess' function 'Popen' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.
 
 --- agent (get_check_output JSON, verbatim) ---
-{"findings":[{"col":12,"file":"/src/app.py","line":3,"message":"Detected subprocess function 'Popen' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.","rule":"python.lang.security.audit.dangerous-subprocess-use-audit","severity":"error"},{"col":40,"file":"/src/app.py","line":3,"message":"Found 'subprocess' function 'Popen' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.","rule":"python.lang.security.audit.subprocess-shell-true","severity":"error"}],"has_more":false,"mode":"findings","total":2}
+{"findings":[{"col":12,"file":"app.py","line":3,"message":"Detected subprocess function 'Popen' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.","rule":"python.lang.security.audit.dangerous-subprocess-use-audit","severity":"error"},{"col":40,"file":"app.py","line":3,"message":"Found 'subprocess' function 'Popen' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.","rule":"python.lang.security.audit.subprocess-shell-true","severity":"error"}],"has_more":false,"mode":"findings","total":2}
 
 ================ scan:trivy-fs ================
 
@@ -88,17 +88,17 @@ For each check: the literal terminal text, then the exact JSON an agent receives
 
 --- terminal (FAILURES block, verbatim) ---
 - severity: error
-  loc: /src/index.js:2:3
+  loc: index.js:2:3
   rule: no-var
   message: Unexpected var, use let or const instead.
 - severity: error
-  loc: /src/index.js:2:7
+  loc: index.js:2:7
   rule: no-unused-vars
   message: 'x' is assigned a value but never used.
 - severity: error
-  loc: /src/index.js:3:9
+  loc: index.js:3:9
   rule: eqeqeq
   message: Expected '===' and instead saw '=='.
 
 --- agent (get_check_output JSON, verbatim) ---
-{"findings":[{"col":3,"file":"/src/index.js","line":2,"message":"Unexpected var, use let or const instead.","rule":"no-var","severity":"error"},{"col":7,"file":"/src/index.js","line":2,"message":"'x' is assigned a value but never used.","rule":"no-unused-vars","severity":"error"},{"col":9,"file":"/src/index.js","line":3,"message":"Expected '===' and instead saw '=='.","rule":"eqeqeq","severity":"error"}],"has_more":false,"mode":"findings","total":3}
+{"findings":[{"col":3,"file":"index.js","line":2,"message":"Unexpected var, use let or const instead.","rule":"no-var","severity":"error"},{"col":7,"file":"index.js","line":2,"message":"'x' is assigned a value but never used.","rule":"no-unused-vars","severity":"error"},{"col":9,"file":"index.js","line":3,"message":"Expected '===' and instead saw '=='.","rule":"eqeqeq","severity":"error"}],"has_more":false,"mode":"findings","total":3}

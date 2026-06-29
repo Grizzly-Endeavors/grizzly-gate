@@ -45,6 +45,30 @@ pub fn apply(spec: &OutputSpec, stdout: &str, stderr: &str) -> (Vec<Finding>, St
     (Vec::new(), clean_text(spec, &combined))
 }
 
+/// Make finding paths repo-relative by stripping the `base` directory prefix
+/// (the dir the tool ran against). Tools disagree: eslint/semgrep emit absolute
+/// paths, clippy/trivy/gitleaks relative ones — this normalizes them to the same
+/// repo-relative form. A path not under `base` (already relative, or elsewhere)
+/// is left untouched.
+pub fn relativize(findings: &mut [Finding], base: &str) {
+    let base = base.trim_end_matches('/');
+    if base.is_empty() {
+        return;
+    }
+    for f in findings {
+        let Some(rel) = f
+            .file
+            .as_deref()
+            .and_then(|p| p.strip_prefix(base))
+            .and_then(|p| p.strip_prefix('/'))
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        f.file = Some(rel);
+    }
+}
+
 /// The text surface for a check, rendered at display time (terminal `FAILURES`
 /// block, MCP text fallback). Structured findings render to a YAML-style block;
 /// a text-path/fallback check shows its already-distilled text. Keeping this out
@@ -681,6 +705,56 @@ mod tests {
     const ESLINT_FIXTURE: &str = include_str!("distill/fixtures/eslint.json");
 
     #[test]
+    fn relativize_strips_base_but_leaves_relative_and_outside_paths() {
+        let mut findings = vec![
+            Finding {
+                file: Some("/src/app.py".into()),
+                line: None,
+                col: None,
+                severity: None,
+                rule: None,
+                message: String::new(),
+            },
+            Finding {
+                file: Some("already/rel.rs".into()),
+                line: None,
+                col: None,
+                severity: None,
+                rule: None,
+                message: String::new(),
+            },
+            Finding {
+                file: Some("/elsewhere/x".into()),
+                line: None,
+                col: None,
+                severity: None,
+                rule: None,
+                message: String::new(),
+            },
+            Finding {
+                file: None,
+                line: None,
+                col: None,
+                severity: None,
+                rule: None,
+                message: String::new(),
+            },
+        ];
+        relativize(&mut findings, "/src/");
+        let files: Vec<Option<&str>> = findings.iter().map(|f| f.file.as_deref()).collect();
+        assert_eq!(
+            files,
+            vec![
+                Some("app.py"),
+                Some("already/rel.rs"),
+                Some("/elsewhere/x"),
+                None
+            ],
+            "base stripped; relative, outside-base, and none paths untouched"
+        );
+    }
+
+    #[test]
     fn eslint_fixture_parses_and_maps_severity() {
         let (findings, _d) = apply(&spec("eslint"), ESLINT_FIXTURE, "");
         assert!(!findings.is_empty(), "eslint messages yield findings");
@@ -876,7 +950,10 @@ mod tests {
         let sections: Vec<String> = samples
             .iter()
             .map(|(label, cmd, parser, fixture)| {
-                let (findings, distilled) = apply(&spec(parser), fixture, "");
+                let (mut findings, distilled) = apply(&spec(parser), fixture, "");
+                // The bad-sample fixtures were captured under /src; match the
+                // runtime, which relativizes against the tool's working dir.
+                relativize(&mut findings, "/src");
                 let check = Check {
                     label: (*label).to_string(),
                     language: None,
