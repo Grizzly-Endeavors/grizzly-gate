@@ -80,6 +80,31 @@ pub struct Check {
     /// flag (e.g. clippy's `CLIPPY_CONF_DIR`).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// How to distill this check's captured output for surfacing. Default (no
+    /// `[output]` / `[checks.output]` block) leaves the output untouched.
+    #[serde(default)]
+    pub output: OutputSpec,
+}
+
+/// Declarative, opt-in recipe for turning a tool's raw stdout/stderr into a
+/// focused surface. Presentation-only: it never affects the gate verdict (which
+/// is the process exit code). See [`crate::distill`].
+#[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct OutputSpec {
+    /// Built-in structured parser id (e.g. `clippy`, `cargo-deny`). When set, the
+    /// harness parses the tool's JSON on stdout into normalized findings; an
+    /// unparseable result falls back to raw text (never a silent "0 findings").
+    #[serde(default)]
+    pub parser: Option<String>,
+    /// Regexes; any captured line matching one is dropped from the distilled
+    /// text (tool progress/noise). Applied on the text path (no `parser`).
+    #[serde(default)]
+    pub drop: Vec<String>,
+    /// Strip ANSI escape sequences from the distilled text. Set only for tools
+    /// that emit color even to a non-TTY.
+    #[serde(default)]
+    pub strip_ansi: bool,
 }
 
 /// What a scanner runs against. Source scanners always run; image scanners run
@@ -98,6 +123,8 @@ pub struct Scanner {
     pub config_dir: PathBuf,
     pub cmd: String,
     pub env: BTreeMap<String, String>,
+    /// How to distill this scanner's captured output for surfacing (see [`Check`]).
+    pub output: OutputSpec,
 }
 
 const MANIFEST: &str = "manifest.toml";
@@ -141,6 +168,8 @@ struct ScannerManifest {
     cmd: String,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    #[serde(default)]
+    output: OutputSpec,
 }
 
 /// Load the gate rule set from a config root: `<root>/languages/*/manifest.toml`
@@ -243,6 +272,7 @@ fn load_scanners(dir: &Path) -> Result<Vec<Scanner>> {
             config_dir,
             cmd: m.cmd,
             env: m.env,
+            output: m.output,
         });
     }
     Ok(out)

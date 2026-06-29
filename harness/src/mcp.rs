@@ -30,7 +30,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use crate::config;
-use crate::report::Report;
+use crate::report::{Check, Finding, Report};
 
 /// MCP protocol revision advertised when the client doesn't request one. The
 /// client's requested version is echoed back when present, for forward compat.
@@ -173,6 +173,8 @@ impl Server<'_> {
         };
         let offset = json_usize(args, "offset_lines").unwrap_or(0);
         let limit = json_usize(args, "limit_lines").unwrap_or(DEFAULT_LIMIT_LINES);
+        let raw = args.get("raw").and_then(Value::as_bool).unwrap_or(false);
+        let severity = args.get("severity").and_then(Value::as_str);
 
         self.ensure_cached();
         let Some(report) = &self.cached else {
@@ -188,18 +190,12 @@ impl Server<'_> {
             ));
         };
 
-        let page = paginate(&check.output, offset, limit);
-        tool_result(&json!({
-            "label": check.label,
-            "ok": check.ok,
-            "exit_code": check.exit_code,
-            "cmd": check.cmd,
-            "total_lines": page.total,
-            "offset_lines": page.start,
-            "returned_lines": page.returned,
-            "has_more": page.has_more,
-            "output": page.text,
-        }))
+        // Findings mode: structured records (optionally severity-filtered),
+        // paginated by finding. Only when not asked for raw and findings exist.
+        if !raw && !check.findings.is_empty() {
+            return tool_result(&findings_payload(check, severity, offset, limit));
+        }
+        tool_result(&text_payload(check, raw, offset, limit))
     }
 
     /// Return the full structured phase-1 honest-map violations (class, language,
@@ -263,13 +259,15 @@ fn tools_list() -> Value {
             },
             {
                 "name": "get_check_output",
-                "description": "Return one check's full output by label, paginated by line, so a large log never lands in context wholesale. Returns total_lines/offset_lines/returned_lines/has_more for paging. Use the labels from run_gate's failing_check_labels.",
+                "description": "Return one check's FOCUSED output by label. For tools the gate parses structurally (clippy, cargo-deny, …) this returns {mode:'findings', total, has_more, findings:[{file,line,col,severity,rule,message}]} — optionally filtered by `severity` — paginated by finding. For text tools it returns {mode:'distilled', total_lines, has_more, output} (noise-filtered text, paginated by line). Pass raw=true for {mode:'raw', …} verbatim unfiltered tool output (the durable record). Page with offset_lines/limit_lines. Use the labels from run_gate's failing_check_labels.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "label": { "type": "string", "description": "The check label, e.g. 'rust:clippy' or 'scan:gitleaks'." },
-                        "offset_lines": { "type": "integer", "minimum": 0, "description": "First output line to return (0-based). Default 0." },
-                        "limit_lines": { "type": "integer", "minimum": 1, "description": "Max lines to return. Default 200." }
+                        "raw": { "type": "boolean", "description": "Return the verbatim combined stdout+stderr instead of the focused surface. Default false." },
+                        "severity": { "type": "string", "enum": ["error", "warning", "note"], "description": "In findings mode, return only findings of this severity." },
+                        "offset_lines": { "type": "integer", "minimum": 0, "description": "First item to return (0-based): line in text/raw mode, finding in findings mode. Default 0." },
+                        "limit_lines": { "type": "integer", "minimum": 1, "description": "Max items to return. Default 200." }
                     },
                     "required": ["label"],
                     "additionalProperties": false
@@ -289,6 +287,57 @@ fn tools_list() -> Value {
     })
 }
 
+/// Build the `findings`-mode `get_check_output` payload for a check: structured
+/// findings (optionally severity-filtered), paginated by finding. Shared by the
+/// MCP tool and the sample generator so the documented agent payload can't drift.
+pub(crate) fn findings_payload(
+    check: &Check,
+    severity: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> Value {
+    let selected: Vec<&Finding> = check
+        .findings
+        .iter()
+        .filter(|f| severity.is_none_or(|s| f.severity.as_deref() == Some(s)))
+        .collect();
+    let total = selected.len();
+    let start = offset.min(total);
+    let end = start.saturating_add(limit).min(total);
+    let page: Vec<Value> = selected
+        .get(start..end)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|f| serde_json::to_value(f).ok())
+        .collect();
+    // Lean envelope: just what an agent branches on. The label/cmd/ok/exit_code
+    // it already has from run_gate; offset/returned it can derive. `total` +
+    // `has_more` are the paging signal; `mode` discriminates the response shape.
+    json!({
+        "mode": "findings",
+        "total": total,
+        "has_more": end < total,
+        "findings": page,
+    })
+}
+
+/// Build the text-mode `get_check_output` payload: the distilled (focused) text
+/// by default, or the verbatim raw output when `raw` is set, paginated by line.
+pub(crate) fn text_payload(check: &Check, raw: bool, offset: usize, limit: usize) -> Value {
+    let (mode, body) = if raw {
+        ("raw", &check.output)
+    } else {
+        ("distilled", &check.distilled)
+    };
+    let page = paginate(body, offset, limit);
+    json!({
+        "mode": mode,
+        "total_lines": page.total,
+        "has_more": page.has_more,
+        "output": page.text,
+    })
+}
+
 /// The compact verdict shared by `run_gate` and `get_report_summary`: counts and
 /// labels, never raw check output.
 fn summary(report: &Report) -> Value {
@@ -297,6 +346,13 @@ fn summary(report: &Report) -> Value {
         .iter()
         .filter(|c| !c.ok)
         .map(|c| c.label.as_str())
+        .collect();
+    // Per-failing-check finding counts, so the fix loop can size each failure
+    // before pulling its output. Omits checks with no parsed findings (text tools).
+    let failing_findings: Vec<Value> = checks
+        .iter()
+        .filter(|c| !c.ok && !c.findings.is_empty())
+        .map(|c| json!({ "label": c.label, "findings": c.findings.len() }))
         .collect();
     let violations: Vec<Value> = report
         .honest_map_violations()
@@ -315,6 +371,7 @@ fn summary(report: &Report) -> Value {
         "checks_total": checks.len(),
         "checks_failed": failing.len(),
         "failing_check_labels": failing,
+        "failing_check_findings": failing_findings,
         "honest_map_violation_count": violations.len(),
         "honest_map_violations": violations,
     })
@@ -345,12 +402,8 @@ fn error_response(id: &Value, code: i64, message: &str) -> String {
 /// One page of a check's output, plus the metadata a caller needs to keep
 /// paging without ever loading the whole blob.
 struct Page {
-    /// First line index actually returned (clamped into range).
-    start: usize,
     /// Total lines in the check's output.
     total: usize,
-    /// Lines in this page.
-    returned: usize,
     /// Whether lines remain after this page.
     has_more: bool,
     /// The page text (lines re-joined with `\n`).
@@ -367,9 +420,7 @@ fn paginate(output: &str, offset: usize, limit: usize) -> Page {
     let end = start.saturating_add(limit).min(total);
     let page = all.get(start..end).unwrap_or_default();
     Page {
-        start,
         total,
-        returned: page.len(),
         has_more: end < total,
         text: page.join("\n"),
     }
@@ -407,6 +458,8 @@ mod tests {
             ok,
             exit_code: Some(i32::from(!ok)),
             duration_secs: 0.0,
+            findings: Vec::new(),
+            distilled: output.into(),
             output: output.into(),
         }
     }
@@ -415,7 +468,6 @@ mod tests {
     fn paginate_returns_whole_small_output() {
         let p = paginate("a\nb\nc", 0, 200);
         assert_eq!(p.total, 3);
-        assert_eq!(p.returned, 3);
         assert!(!p.has_more, "nothing left after a full page");
         assert_eq!(p.text, "a\nb\nc");
     }
@@ -424,12 +476,10 @@ mod tests {
     fn paginate_pages_through_a_long_output() {
         let body = "0\n1\n2\n3\n4\n5\n6\n7\n8\n9";
         let first = paginate(body, 0, 4);
-        assert_eq!(first.returned, 4);
         assert_eq!(first.text, "0\n1\n2\n3");
         assert!(first.has_more, "more lines remain after the first page");
 
         let mid = paginate(body, 4, 4);
-        assert_eq!(mid.start, 4);
         assert_eq!(mid.text, "4\n5\n6\n7");
         assert!(mid.has_more);
 
@@ -441,10 +491,8 @@ mod tests {
     #[test]
     fn paginate_past_the_end_is_empty_not_an_error() {
         let p = paginate("a\nb", 99, 10);
-        assert_eq!(p.start, 2, "offset is clamped to the line count");
-        assert_eq!(p.returned, 0);
         assert!(!p.has_more);
-        assert_eq!(p.text, "");
+        assert_eq!(p.text, "", "offset past the end yields an empty page");
     }
 
     #[test]

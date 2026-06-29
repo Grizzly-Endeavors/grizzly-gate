@@ -22,7 +22,7 @@ name = "clippy"
 # (warnings are blockers); the daemon-specific (print_stderr, exit) and doc-
 # discipline (missing_*_doc, must_use_candidate) lints are intentionally allowed.
 # Configurable thresholds + test exemptions live in clippy.toml (CLIPPY_CONF_DIR).
-cmd = """cargo clippy --all-targets --all-features -- \
+cmd = """cargo clippy --all-targets --all-features --message-format=json -- \
 -W clippy::pedantic \
 -D warnings \
 -D unsafe_code \
@@ -62,10 +62,18 @@ cmd = """cargo clippy --all-targets --all-features -- \
 -A clippy::missing_panics_doc \
 -A clippy::must_use_candidate"""
 env = { CLIPPY_CONF_DIR = "{config}" }
+# --message-format=json makes clippy emit machine-readable diagnostics on stdout
+# (the lint LEVELS above still drive the exit code, so the verdict is unchanged).
+# The harness distills them into normalized findings; raw output stays in report.json.
+output = { parser = "clippy" }
 
 [[checks]]
 name = "deny"
-cmd = "cargo deny check --config {config}/deny.toml"
+# --format json makes cargo-deny emit NDJSON diagnostics (on stderr); the gate
+# distills them to findings. Exit code still drives the verdict. `multiple-versions`
+# duplicate-crate noise is rendered as plain findings the reader can scan/filter.
+cmd = "cargo deny --format json check --config {config}/deny.toml"
+output = { parser = "cargo-deny" }
 
 [[checks]]
 name = "test"

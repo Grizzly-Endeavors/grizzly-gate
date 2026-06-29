@@ -1,0 +1,27 @@
+grizzly-gate distilled output — VERBATIM surfaces from real captured tool output.
+For each check: the literal terminal text, then the exact JSON an agent receives from get_check_output.
+
+================ rust:harness:clippy ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: warning
+  loc: src/main.rs:3:13
+  rule: clippy::unnecessary_literal_unwrap
+  message: used `unwrap()` on `None` value
+- severity: error
+  loc: src/main.rs:3:13
+  rule: clippy::unwrap_used
+  message: used `unwrap()` on an `Option` value
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":13,"file":"src/main.rs","line":3,"message":"used `unwrap()` on `None` value","rule":"clippy::unnecessary_literal_unwrap","severity":"warning"},{"col":13,"file":"src/main.rs","line":3,"message":"used `unwrap()` on an `Option` value","rule":"clippy::unwrap_used","severity":"error"}],"has_more":false,"mode":"findings","total":2}
+
+================ rust:harness:deny ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  rule: banned
+  message: crate 'anyhow = 1.0.102' is explicitly banned
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"message":"crate 'anyhow = 1.0.102' is explicitly banned","rule":"banned","severity":"error"}],"has_more":false,"mode":"findings","total":1}
