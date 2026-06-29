@@ -1,0 +1,87 @@
+[
+  {
+    "filePath": "/src/index.js",
+    "messages": [
+      {
+        "ruleId": "no-var",
+        "severity": 2,
+        "message": "Unexpected var, use let or const instead.",
+        "line": 2,
+        "column": 3,
+        "nodeType": "VariableDeclaration",
+        "messageId": "unexpectedVar",
+        "endLine": 2,
+        "endColumn": 13,
+        "fix": {
+          "range": [
+            18,
+            21
+          ],
+          "text": "let"
+        }
+      },
+      {
+        "ruleId": "no-unused-vars",
+        "severity": 2,
+        "message": "'x' is assigned a value but never used.",
+        "line": 2,
+        "column": 7,
+        "nodeType": "Identifier",
+        "messageId": "unusedVar",
+        "endLine": 2,
+        "endColumn": 8,
+        "suggestions": [
+          {
+            "messageId": "removeVar",
+            "data": {
+              "varName": "x"
+            },
+            "fix": {
+              "range": [
+                18,
+                28
+              ],
+              "text": ""
+            },
+            "desc": "Remove unused variable 'x'."
+          }
+        ]
+      },
+      {
+        "ruleId": "eqeqeq",
+        "severity": 2,
+        "message": "Expected '===' and instead saw '=='.",
+        "line": 3,
+        "column": 9,
+        "nodeType": "BinaryExpression",
+        "messageId": "unexpected",
+        "endLine": 3,
+        "endColumn": 11,
+        "suggestions": [
+          {
+            "messageId": "replaceOperator",
+            "data": {
+              "expectedOperator": "===",
+              "actualOperator": "=="
+            },
+            "fix": {
+              "range": [
+                37,
+                39
+              ],
+              "text": "==="
+            },
+            "desc": "Use '===' instead of '=='."
+          }
+        ]
+      }
+    ],
+    "suppressedMessages": [],
+    "errorCount": 4,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 1,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  }
+]

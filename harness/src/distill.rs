@@ -73,6 +73,7 @@ fn parse(parser: &str, stdout: &str, stderr: &str) -> Result<Vec<Finding>, Strin
         "trivy" => parse_trivy(stdout),
         "osv-scanner" => parse_osv(stdout),
         "gitleaks" => parse_gitleaks(stdout),
+        "eslint" => parse_eslint(stdout),
         other => Err(format!("unknown parser '{other}'")),
     }
 }
@@ -518,6 +519,45 @@ fn parse_gitleaks(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
+/// eslint `-f json`: a top-level array of file entries, each with `messages[]`
+/// carrying `ruleId`, integer `severity` (1=warn, 2=error), `message`, `line`,
+/// `column`. `ruleId` is null for parse/syntax errors — then the rule is omitted.
+fn parse_eslint(stdout: &str) -> Result<Vec<Finding>, String> {
+    let doc = parse_doc(stdout, "eslint")?;
+    let files = doc.as_array().map_or(&[][..], |a| a);
+    let mut findings = Vec::new();
+    for fe in files {
+        let path = fe.get("filePath").and_then(Value::as_str);
+        for m in arr(fe, "messages") {
+            findings.push(Finding {
+                file: path.map(str::to_string),
+                line: u32_field(m, "line"),
+                col: u32_field(m, "column"),
+                severity: m
+                    .get("severity")
+                    .and_then(Value::as_u64)
+                    .map(|s| normalize_eslint_severity(s).to_string()),
+                rule: m.get("ruleId").and_then(Value::as_str).map(str::to_string),
+                message: m
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            });
+        }
+    }
+    Ok(findings)
+}
+
+/// eslint integer severity (1=warning, 2=error) onto the normalized set.
+fn normalize_eslint_severity(s: u64) -> &'static str {
+    match s {
+        2 => "error",
+        1 => "warning",
+        _ => "note",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,6 +678,18 @@ mod tests {
     const TRIVY_FIXTURE: &str = include_str!("distill/fixtures/trivy.json");
     const OSV_FIXTURE: &str = include_str!("distill/fixtures/osv-scanner.json");
     const GITLEAKS_FIXTURE: &str = include_str!("distill/fixtures/gitleaks.json");
+    const ESLINT_FIXTURE: &str = include_str!("distill/fixtures/eslint.json");
+
+    #[test]
+    fn eslint_fixture_parses_and_maps_severity() {
+        let (findings, _d) = apply(&spec("eslint"), ESLINT_FIXTURE, "");
+        assert!(!findings.is_empty(), "eslint messages yield findings");
+        let f = findings.first().unwrap();
+        assert!(f.file.is_some() && f.line.is_some(), "located: {f:?}");
+        assert_eq!(f.rule.as_deref(), Some("no-var"));
+        // eslint severity 2 -> error.
+        assert_eq!(f.severity.as_deref(), Some("error"));
+    }
 
     #[test]
     fn semgrep_fixture_parses_and_shortens_rule() {
@@ -809,9 +861,15 @@ mod tests {
             ),
             (
                 "scan:gitleaks",
-                "gitleaks detect ... --report-format json --report-path /dev/stdout",
+                "gitleaks detect ... (temp file) --report-format json | cat",
                 "gitleaks",
                 GITLEAKS_FIXTURE,
+            ),
+            (
+                "node:web:eslint",
+                ".../node_modules/.bin/eslint --config ... -f json .",
+                "eslint",
+                ESLINT_FIXTURE,
             ),
         ];
         let header = "grizzly-gate distilled output — VERBATIM surfaces from real captured tool output.\nFor each check: the literal terminal text, then the exact JSON an agent receives from get_check_output.\n";

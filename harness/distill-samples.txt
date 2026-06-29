@@ -83,3 +83,22 @@ For each check: the literal terminal text, then the exact JSON an agent receives
 
 --- agent (get_check_output JSON, verbatim) ---
 {"findings":[{"col":9,"file":"config.ini","line":2,"message":"Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data.","rule":"stripe-access-token"},{"col":16,"file":"config.ini","line":1,"message":"Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.","rule":"github-pat"}],"has_more":false,"mode":"findings","total":2}
+
+================ node:web:eslint ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: /src/index.js:2:3
+  rule: no-var
+  message: Unexpected var, use let or const instead.
+- severity: error
+  loc: /src/index.js:2:7
+  rule: no-unused-vars
+  message: 'x' is assigned a value but never used.
+- severity: error
+  loc: /src/index.js:3:9
+  rule: eqeqeq
+  message: Expected '===' and instead saw '=='.
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":3,"file":"/src/index.js","line":2,"message":"Unexpected var, use let or const instead.","rule":"no-var","severity":"error"},{"col":7,"file":"/src/index.js","line":2,"message":"'x' is assigned a value but never used.","rule":"no-unused-vars","severity":"error"},{"col":9,"file":"/src/index.js","line":3,"message":"Expected '===' and instead saw '=='.","rule":"eqeqeq","severity":"error"}],"has_more":false,"mode":"findings","total":3}
