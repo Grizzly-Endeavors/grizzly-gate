@@ -27,7 +27,7 @@ use crate::report::Finding;
 pub fn apply(spec: &OutputSpec, stdout: &str, stderr: &str) -> (Vec<Finding>, String) {
     let combined = format!("{stdout}{stderr}");
     if let Some(parser) = spec.parser.as_deref() {
-        return match parse(parser, &combined) {
+        return match parse(parser, stdout, stderr) {
             // On success the structured `findings` ARE the surface; the text
             // rendering is produced at display time (see `display_text`), so it
             // is not frozen into `report.json`. Distilled text stays empty here.
@@ -57,13 +57,22 @@ pub fn display_text(findings: &[Finding], distilled: &str) -> String {
     }
 }
 
-/// Dispatch to a per-tool structured parser over the combined output. `Err`
-/// carries a short reason used in the fallback marker. An unknown id is a
-/// manifest bug, surfaced the same way.
-fn parse(parser: &str, combined: &str) -> Result<Vec<Finding>, String> {
+/// Dispatch to a per-tool structured parser. `Err` carries a short reason used in
+/// the fallback marker; an unknown id is a manifest bug, surfaced the same way.
+///
+/// Two output shapes: cargo/rustc emit newline-delimited JSON (one record per
+/// line, on either stream — clippy stdout, cargo-deny stderr — so those scan the
+/// combined text), while the scanners emit a single pretty-printed JSON document
+/// on stdout, parsed whole.
+fn parse(parser: &str, stdout: &str, stderr: &str) -> Result<Vec<Finding>, String> {
+    let combined = || format!("{stdout}{stderr}");
     match parser {
-        "clippy" => parse_clippy(combined),
-        "cargo-deny" => parse_cargo_deny(combined),
+        "clippy" => parse_clippy(&combined()),
+        "cargo-deny" => parse_cargo_deny(&combined()),
+        "semgrep" => parse_semgrep(stdout),
+        "trivy" => parse_trivy(stdout),
+        "osv-scanner" => parse_osv(stdout),
+        "gitleaks" => parse_gitleaks(stdout),
         other => Err(format!("unknown parser '{other}'")),
     }
 }
@@ -129,22 +138,35 @@ pub fn render(findings: &[Finding]) -> String {
     }
     let mut blocks: Vec<String> = Vec::with_capacity(findings.len());
     for f in findings {
-        let sev = f.severity.as_deref().unwrap_or("note");
-        let mut lines = vec![format!("- severity: {sev}")];
+        // Build only the fields the tool actually provided, in a stable order —
+        // a missing severity/loc/rule is omitted (not defaulted), matching the
+        // structured `findings` JSON. `message` is always present.
+        let mut fields: Vec<(&str, String)> = Vec::new();
+        if let Some(sev) = f.severity.as_deref() {
+            fields.push(("severity", sev.to_string()));
+        }
         match (f.file.as_deref(), f.line, f.col) {
             (Some(file), Some(line), Some(col)) => {
-                lines.push(format!("  loc: {file}:{line}:{col}"));
+                fields.push(("loc", format!("{file}:{line}:{col}")));
             }
-            (Some(file), Some(line), None) => lines.push(format!("  loc: {file}:{line}")),
-            (Some(file), _, _) => lines.push(format!("  loc: {file}")),
+            (Some(file), Some(line), None) => fields.push(("loc", format!("{file}:{line}"))),
+            (Some(file), _, _) => fields.push(("loc", file.to_string())),
             (None, _, _) => {}
         }
         if let Some(rule) = f.rule.as_deref() {
-            lines.push(format!("  rule: {rule}"));
+            fields.push(("rule", rule.to_string()));
         }
         // First line of the message only; the full text stays in raw `output`.
-        let msg = f.message.lines().next().unwrap_or("");
-        lines.push(format!("  message: {msg}"));
+        fields.push((
+            "message",
+            f.message.lines().next().unwrap_or("").to_string(),
+        ));
+        // YAML-style list item: `- ` on the first field, `  ` on the rest.
+        let lines: Vec<String> = fields
+            .iter()
+            .enumerate()
+            .map(|(i, (k, v))| format!("{} {k}: {v}", if i == 0 { "-" } else { " " }))
+            .collect();
         blocks.push(lines.join("\n"));
     }
     let mut out = blocks.join("\n");
@@ -305,6 +327,197 @@ fn looks_like_json_lines(s: &str) -> bool {
         .is_some_and(|l| l.trim_start().starts_with('{'))
 }
 
+// --- Single-document scanner parsers ----------------------------------------
+
+/// Parse a scanner's whole-stdout JSON document. Empty stdout is a parse failure
+/// (the tool produced no report), surfaced via the fail-closed marker.
+fn parse_doc(stdout: &str, tool: &str) -> Result<Value, String> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{tool} produced no JSON on stdout"));
+    }
+    serde_json::from_str(trimmed).map_err(|e| format!("{tool} JSON parse error: {e}"))
+}
+
+/// Borrow `v[key]` as a slice of values, or an empty slice when absent/not an
+/// array — lets the parsers walk nested arrays without cloning or unwrapping.
+fn arr<'a>(v: &'a Value, key: &str) -> &'a [Value] {
+    v.get(key).and_then(Value::as_array).map_or(&[][..], |a| a)
+}
+
+/// Read a `u64` JSON field down to `u32` (line/column numbers), `None` on absence
+/// or overflow.
+fn u32_field(v: &Value, key: &str) -> Option<u32> {
+    v.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+/// semgrep `--json`: `results[]` with `path`, `start.{line,col}`, `check_id`, and
+/// `extra.{severity,message}`. The gate points `--config` at a directory, so
+/// `check_id` is prefixed with the gate's config path — trim it to the rule tail.
+fn parse_semgrep(stdout: &str) -> Result<Vec<Finding>, String> {
+    let doc = parse_doc(stdout, "semgrep")?;
+    let mut findings = Vec::new();
+    for r in arr(&doc, "results") {
+        let start = r.get("start");
+        let extra = r.get("extra");
+        findings.push(Finding {
+            file: r.get("path").and_then(Value::as_str).map(str::to_string),
+            line: start.and_then(|s| u32_field(s, "line")),
+            col: start.and_then(|s| u32_field(s, "col")),
+            severity: extra
+                .and_then(|e| e.get("severity"))
+                .and_then(Value::as_str)
+                .map(|s| normalize_semgrep_severity(s).to_string()),
+            rule: r
+                .get("check_id")
+                .and_then(Value::as_str)
+                .map(shorten_semgrep_rule),
+            message: extra
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    Ok(findings)
+}
+
+/// semgrep `ERROR`/`WARNING`/`INFO` onto the normalized severity set.
+fn normalize_semgrep_severity(s: &str) -> &'static str {
+    match s {
+        "ERROR" => "error",
+        "WARNING" => "warning",
+        _ => "note",
+    }
+}
+
+/// Drop the gate's vendored-rules config-path prefix from a semgrep `check_id`,
+/// keeping the meaningful rule path (everything after the last `.rules.`).
+fn shorten_semgrep_rule(id: &str) -> String {
+    id.rsplit_once(".rules.")
+        .map_or_else(|| id.to_string(), |(_, tail)| tail.to_string())
+}
+
+/// trivy `--format json`: `Results[].Vulnerabilities[]`. One finding per vuln,
+/// located at the lockfile (`Target`); no line number. Severity is trivy's
+/// CRITICAL/HIGH/… scale, normalized; the package + fix is folded into the message.
+fn parse_trivy(stdout: &str) -> Result<Vec<Finding>, String> {
+    let doc = parse_doc(stdout, "trivy")?;
+    let mut findings = Vec::new();
+    for res in arr(&doc, "Results") {
+        let target = res.get("Target").and_then(Value::as_str);
+        for v in arr(res, "Vulnerabilities") {
+            let pkg = v.get("PkgName").and_then(Value::as_str).unwrap_or("");
+            let installed = v
+                .get("InstalledVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let title = v.get("Title").and_then(Value::as_str).unwrap_or("");
+            let fixed = v.get("FixedVersion").and_then(Value::as_str).unwrap_or("");
+            let fix_note = if fixed.is_empty() {
+                String::new()
+            } else {
+                format!(" (fix: {fixed})")
+            };
+            findings.push(Finding {
+                file: target.map(str::to_string),
+                line: None,
+                col: None,
+                severity: v
+                    .get("Severity")
+                    .and_then(Value::as_str)
+                    .map(|s| normalize_trivy_severity(s).to_string()),
+                rule: v
+                    .get("VulnerabilityID")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                message: format!("{pkg} {installed}: {title}{fix_note}"),
+            });
+        }
+    }
+    Ok(findings)
+}
+
+/// trivy CRITICAL/HIGH/MEDIUM/LOW/UNKNOWN onto the normalized set. The gate fails
+/// on any vuln (exit code), so this only orders findings for the reader.
+fn normalize_trivy_severity(s: &str) -> &'static str {
+    match s {
+        "CRITICAL" | "HIGH" => "error",
+        "MEDIUM" => "warning",
+        _ => "note",
+    }
+}
+
+/// osv-scanner `--format json`: `results[].packages[]`, one finding per advisory
+/// `group` (groups collapse aliases of the same vuln). No source location;
+/// osv has no error/warning severity, so it's left unset and the CVSS score (when
+/// present) rides in the message alongside the package and advisory ids.
+fn parse_osv(stdout: &str) -> Result<Vec<Finding>, String> {
+    let doc = parse_doc(stdout, "osv-scanner")?;
+    let mut findings = Vec::new();
+    for res in arr(&doc, "results") {
+        for p in arr(res, "packages") {
+            let pkg = p.get("package");
+            let name = pkg
+                .and_then(|x| x.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let version = pkg
+                .and_then(|x| x.get("version"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let eco = pkg
+                .and_then(|x| x.get("ecosystem"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            for g in arr(p, "groups") {
+                let ids: Vec<&str> = arr(g, "ids").iter().filter_map(Value::as_str).collect();
+                let cvss = g
+                    .get("max_severity")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" [CVSS {s}]"))
+                    .unwrap_or_default();
+                findings.push(Finding {
+                    file: None,
+                    line: None,
+                    col: None,
+                    severity: None,
+                    rule: ids.first().map(|s| (*s).to_string()),
+                    message: format!("{name} {version} ({eco}): {}{cvss}", ids.join(", ")),
+                });
+            }
+        }
+    }
+    Ok(findings)
+}
+
+/// gitleaks `--report-format json`: a top-level array of secret findings, each
+/// with `File`/`StartLine`/`StartColumn`, `RuleID`, and `Description`. Secrets
+/// have no severity (any leak is blocking); the value is `--redact`ed upstream.
+fn parse_gitleaks(stdout: &str) -> Result<Vec<Finding>, String> {
+    let doc = parse_doc(stdout, "gitleaks")?;
+    let items = doc.as_array().map_or(&[][..], |a| a);
+    let mut findings = Vec::new();
+    for f in items {
+        findings.push(Finding {
+            file: f.get("File").and_then(Value::as_str).map(str::to_string),
+            line: u32_field(f, "StartLine"),
+            col: u32_field(f, "StartColumn"),
+            severity: None,
+            rule: f.get("RuleID").and_then(Value::as_str).map(str::to_string),
+            message: f
+                .get("Description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    Ok(findings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +633,97 @@ mod tests {
     const CLIPPY_FIXTURE: &str = include_str!("distill/fixtures/clippy.jsonl");
     /// Real `cargo deny --format json check` stderr (a banned crate + summary).
     const CARGO_DENY_FIXTURE: &str = include_str!("distill/fixtures/cargo-deny.jsonl");
+    /// Real scanner JSON captured from the gate image against a bad-sample repo.
+    const SEMGREP_FIXTURE: &str = include_str!("distill/fixtures/semgrep.json");
+    const TRIVY_FIXTURE: &str = include_str!("distill/fixtures/trivy.json");
+    const OSV_FIXTURE: &str = include_str!("distill/fixtures/osv-scanner.json");
+    const GITLEAKS_FIXTURE: &str = include_str!("distill/fixtures/gitleaks.json");
+
+    #[test]
+    fn semgrep_fixture_parses_and_shortens_rule() {
+        let (findings, _d) = apply(&spec("semgrep"), SEMGREP_FIXTURE, "");
+        assert!(!findings.is_empty(), "semgrep results yield findings");
+        let f = findings.first().unwrap();
+        assert!(f.file.is_some() && f.line.is_some(), "located: {f:?}");
+        // The gate's config-path prefix is stripped from the rule id.
+        assert!(
+            f.rule
+                .as_deref()
+                .is_some_and(|r| !r.contains("etc.grizzly-gate")),
+            "rule shortened: {:?}",
+            f.rule
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|c| c.severity.as_deref() == Some("error")),
+            "ERROR severity normalized"
+        );
+    }
+
+    #[test]
+    fn trivy_fixture_parses_vulnerabilities() {
+        let (findings, _d) = apply(&spec("trivy"), TRIVY_FIXTURE, "");
+        assert!(!findings.is_empty(), "trivy vulns yield findings");
+        let f = findings.first().unwrap();
+        assert!(
+            f.rule
+                .as_deref()
+                .is_some_and(|r| r.starts_with("CVE-") || r.starts_with("GHSA-")),
+            "rule is the advisory id: {:?}",
+            f.rule
+        );
+        assert!(f.file.is_some(), "located at the lockfile target");
+    }
+
+    #[test]
+    fn osv_fixture_parses_groups_without_severity() {
+        let (findings, _d) = apply(&spec("osv-scanner"), OSV_FIXTURE, "");
+        assert!(!findings.is_empty(), "osv vulns yield findings");
+        let f = findings.first().unwrap();
+        assert!(f.rule.is_some(), "advisory id present");
+        assert!(
+            f.severity.is_none(),
+            "osv carries no error/warning severity"
+        );
+        assert!(
+            f.message.contains('('),
+            "message names the ecosystem: {}",
+            f.message
+        );
+    }
+
+    #[test]
+    fn gitleaks_fixture_parses_secrets() {
+        let (findings, _d) = apply(&spec("gitleaks"), GITLEAKS_FIXTURE, "");
+        assert!(!findings.is_empty(), "gitleaks leaks yield findings");
+        let f = findings.first().unwrap();
+        assert!(f.file.is_some() && f.line.is_some(), "located: {f:?}");
+        assert!(f.rule.is_some(), "the gitleaks RuleID is the rule");
+    }
+
+    #[test]
+    fn gitleaks_clean_run_is_empty_not_a_failure() {
+        // gitleaks writes `[]` on a clean run — valid JSON, zero findings, no marker.
+        let (findings, distilled) = apply(&spec("gitleaks"), "[]\n", "");
+        assert!(findings.is_empty());
+        assert!(
+            distilled.is_empty(),
+            "clean structured run has no fallback text"
+        );
+    }
+
+    #[test]
+    fn scanner_empty_stdout_fails_closed() {
+        // A scanner that emits nothing on stdout (e.g. crashed) must not look clean.
+        let (findings, distilled) = apply(&spec("trivy"), "", "panic: boom\n");
+        assert!(findings.is_empty());
+        assert!(
+            distilled.contains("could not parse trivy output"),
+            "{distilled}"
+        );
+        assert!(distilled.contains("panic: boom"), "raw stderr preserved");
+    }
 
     #[test]
     fn clippy_fixture_parses_real_output() {
@@ -484,6 +788,30 @@ mod tests {
                 "cargo deny --format json check --config .../deny.toml",
                 "cargo-deny",
                 CARGO_DENY_FIXTURE,
+            ),
+            (
+                "scan:semgrep",
+                "semgrep scan --json --quiet --config .../rules <src>",
+                "semgrep",
+                SEMGREP_FIXTURE,
+            ),
+            (
+                "scan:trivy-fs",
+                "trivy fs --format json --quiet --no-progress --exit-code 1 ... <src>",
+                "trivy",
+                TRIVY_FIXTURE,
+            ),
+            (
+                "scan:osv-scanner",
+                "osv-scanner scan source -r --format json ... <src>",
+                "osv-scanner",
+                OSV_FIXTURE,
+            ),
+            (
+                "scan:gitleaks",
+                "gitleaks detect ... --report-format json --report-path /dev/stdout",
+                "gitleaks",
+                GITLEAKS_FIXTURE,
             ),
         ];
         let header = "grizzly-gate distilled output — VERBATIM surfaces from real captured tool output.\nFor each check: the literal terminal text, then the exact JSON an agent receives from get_check_output.\n";

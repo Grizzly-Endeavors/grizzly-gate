@@ -1,0 +1,319 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.71.2"
+  },
+  "ReportID": "019f13ff-2d87-7adf-a132-02e973bd24e1",
+  "CreatedAt": "2026-06-29T15:28:38.279713478Z",
+  "ArtifactName": "/src",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "requirements.txt",
+      "Class": "lang-pkgs",
+      "Type": "pip",
+      "Packages": [
+        {
+          "Name": "Django",
+          "Identifier": {
+            "PURL": "pkg:pypi/django@2.2.0",
+            "UID": "bea08e11f7d94622"
+          },
+          "Version": "2.2.0",
+          "Locations": [
+            {
+              "StartLine": 3,
+              "EndLine": 3
+            }
+          ],
+          "AnalyzedBy": "pip"
+        },
+        {
+          "Name": "PyYAML",
+          "Identifier": {
+            "PURL": "pkg:pypi/pyyaml@5.1",
+            "UID": "487c7ce4d5750631"
+          },
+          "Version": "5.1",
+          "Locations": [
+            {
+              "StartLine": 1,
+              "EndLine": 1
+            }
+          ],
+          "AnalyzedBy": "pip"
+        },
+        {
+          "Name": "requests",
+          "Identifier": {
+            "PURL": "pkg:pypi/requests@2.19.0",
+            "UID": "6d59e745010602d4"
+          },
+          "Version": "2.19.0",
+          "Locations": [
+            {
+              "StartLine": 2,
+              "EndLine": 2
+            }
+          ],
+          "AnalyzedBy": "pip"
+        }
+      ],
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2019-14234",
+          "VendorIDs": [
+            "GHSA-6r97-cj55-9hrq"
+          ],
+          "PkgName": "Django",
+          "PkgIdentifier": {
+            "PURL": "pkg:pypi/django@2.2.0",
+            "UID": "bea08e11f7d94622"
+          },
+          "InstalledVersion": "2.2.0",
+          "FixedVersion": "1.11.23, 2.1.11, 2.2.4",
+          "Status": "fixed",
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2019-14234",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory pip",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"
+          },
+          "Fingerprint": "sha256:398eee643b5b41387a6093cbd1fa9d4807e9a8abca7e0546facebc9fb590396e",
+          "Title": "Django: SQL injection possibility in key and index lookups for JSONField/HStoreField",
+          "Description": "An issue was discovered in Django 1.11.x before 1.11.23, 2.1.x before 2.1.11, and 2.2.x before 2.2.4. Due to an error in shallow key transformation, key and index lookups for django.contrib.postgres.fields.JSONField, and key lookups for django.contrib.postgres.fields.HStoreField, were subject to SQL injection. This could, for example, be exploited via crafted use of \"OR 1=1\" in a key or index name to return all records, using a suitably crafted dictionary, with dictionary expansion, as the **kwargs passed to the QuerySet.filter() function.",
+          "Severity": "CRITICAL",
+          "CweIDs": [
+            "CWE-89"
+          ],
+          "VendorSeverity": {
+            "ghsa": 4,
+            "nvd": 4,
+            "redhat": 2,
+            "ubuntu": 2
+          },
+          "CVSS": {
+            "ghsa": {
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V40Vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
+              "V3Score": 9.8,
+              "V40Score": 9.3
+            },
+            "nvd": {
+              "V2Vector": "AV:N/AC:L/Au:N/C:P/I:P/A:P",
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V2Score": 7.5,
+              "V3Score": 9.8
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+              "V3Score": 5.3
+            }
+          },
+          "References": [
+            "http://lists.opensuse.org/opensuse-security-announce/2019-08/msg00025.html",
+            "https://access.redhat.com/security/cve/CVE-2019-14234",
+            "https://docs.djangoproject.com/en/dev/releases/security",
+            "https://docs.djangoproject.com/en/dev/releases/security/",
+            "https://github.com/advisories/GHSA-6r97-cj55-9hrq",
+            "https://github.com/django/django",
+            "https://github.com/django/django/commit/4f5b58f5cd3c57fee9972ab074f8dc6895d8f387",
+            "https://github.com/django/django/commit/ed682a24fca774818542757651bfba576c3fc3ef",
+            "https://github.com/django/django/commit/f74b3ae3628c26e1b4f8db3d13a91d52a833a975",
+            "https://github.com/pypa/advisory-database/tree/main/vulns/django/PYSEC-2019-13.yaml",
+            "https://groups.google.com/forum/#!topic/django-announce/jIoju2-KLDs",
+            "https://groups.google.com/forum/#%21topic/django-announce/jIoju2-KLDs",
+            "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/STVX7X7IDWAH5SKE6MBMY3TEI6ZODBTK",
+            "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/STVX7X7IDWAH5SKE6MBMY3TEI6ZODBTK/",
+            "https://nvd.nist.gov/vuln/detail/CVE-2019-14234",
+            "https://seclists.org/bugtraq/2019/Aug/15",
+            "https://security.gentoo.org/glsa/202004-17",
+            "https://security.netapp.com/advisory/ntap-20190828-0002",
+            "https://security.netapp.com/advisory/ntap-20190828-0002/",
+            "https://ubuntu.com/security/notices/USN-4084-1",
+            "https://www.cve.org/CVERecord?id=CVE-2019-14234",
+            "https://www.debian.org/security/2019/dsa-4498",
+            "https://www.djangoproject.com/weblog/2019/aug/01/security-releases",
+            "https://www.djangoproject.com/weblog/2019/aug/01/security-releases/"
+          ],
+          "PublishedDate": "2019-08-09T13:15:11.777Z",
+          "LastModifiedDate": "2026-06-17T02:18:00.427Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2019-19844",
+          "VendorIDs": [
+            "GHSA-vfq6-hq5r-27r6"
+          ],
+          "PkgName": "Django",
+          "PkgIdentifier": {
+            "PURL": "pkg:pypi/django@2.2.0",
+            "UID": "bea08e11f7d94622"
+          },
+          "InstalledVersion": "2.2.0",
+          "FixedVersion": "1.11.27, 2.2.9, 3.0.1",
+          "Status": "fixed",
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2019-19844",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory pip",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"
+          },
+          "Fingerprint": "sha256:94692e91da6d0539c8abd71e0249c17e2844c724f287bf9e9f0c339c9176a089",
+          "Title": "Django: crafted email address allows account takeover",
+          "Description": "Django before 1.11.27, 2.x before 2.2.9, and 3.x before 3.0.1 allows account takeover. A suitably crafted email address (that is equal to an existing user's email address after case transformation of Unicode characters) would allow an attacker to be sent a password reset token for the matched user account. (One mitigation in the new releases is to send password reset tokens only to the registered user email address.)",
+          "Severity": "CRITICAL",
+          "CweIDs": [
+            "CWE-640"
+          ],
+          "VendorSeverity": {
+            "ghsa": 4,
+            "nvd": 4,
+            "redhat": 4,
+            "ubuntu": 3
+          },
+          "CVSS": {
+            "ghsa": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V40Vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
+              "V3Score": 9.8,
+              "V40Score": 9.3
+            },
+            "nvd": {
+              "V2Vector": "AV:N/AC:L/Au:N/C:N/I:P/A:N",
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V2Score": 5,
+              "V3Score": 9.8
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V3Score": 9.8
+            }
+          },
+          "References": [
+            "http://packetstormsecurity.com/files/155872/Django-Account-Hijack.html",
+            "https://access.redhat.com/security/cve/CVE-2019-19844",
+            "https://docs.djangoproject.com/en/dev/releases/security",
+            "https://docs.djangoproject.com/en/dev/releases/security/",
+            "https://github.com/advisories/GHSA-vfq6-hq5r-27r6",
+            "https://github.com/django/django",
+            "https://github.com/django/django/commit/302a4ff1e8b1c798aab97673909c7a3dfda42c26",
+            "https://github.com/django/django/commit/4d334bea06cac63dc1272abcec545b85136cca0e",
+            "https://github.com/django/django/commit/5b1fbcef7a8bec991ebe7b2a18b5d5a95d72cb70",
+            "https://github.com/django/django/commit/f4cff43bf921fcea6a29b726eb66767f67753fa2",
+            "https://github.com/pypa/advisory-database/tree/main/vulns/django/PYSEC-2019-16.yaml",
+            "https://groups.google.com/forum/#!topic/django-announce/3oaB2rVH3a0",
+            "https://groups.google.com/forum/#%21topic/django-announce/3oaB2rVH3a0",
+            "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/HCM2DPUI7TOZWN4A6JFQFUVQ2XGE7GUD",
+            "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/HCM2DPUI7TOZWN4A6JFQFUVQ2XGE7GUD/",
+            "https://nvd.nist.gov/vuln/detail/CVE-2019-19844",
+            "https://seclists.org/bugtraq/2020/Jan/9",
+            "https://security.gentoo.org/glsa/202004-17",
+            "https://security.netapp.com/advisory/ntap-20200110-0003",
+            "https://security.netapp.com/advisory/ntap-20200110-0003/",
+            "https://ubuntu.com/security/notices/USN-4224-1",
+            "https://ubuntu.com/security/notices/USN-6722-1",
+            "https://usn.ubuntu.com/4224-1",
+            "https://usn.ubuntu.com/4224-1/",
+            "https://www.cve.org/CVERecord?id=CVE-2019-19844",
+            "https://www.debian.org/security/2020/dsa-4598",
+            "https://www.djangoproject.com/weblog/2019/dec/18/security-releases",
+            "https://www.djangoproject.com/weblog/2019/dec/18/security-releases/"
+          ],
+          "PublishedDate": "2019-12-18T19:15:11.78Z",
+          "LastModifiedDate": "2026-06-17T02:27:20.267Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2020-7471",
+          "VendorIDs": [
+            "GHSA-hmr4-m2h5-33qx"
+          ],
+          "PkgName": "Django",
+          "PkgIdentifier": {
+            "PURL": "pkg:pypi/django@2.2.0",
+            "UID": "bea08e11f7d94622"
+          },
+          "InstalledVersion": "2.2.0",
+          "FixedVersion": "1.11.28, 2.2.10, 3.0.3",
+          "Status": "fixed",
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2020-7471",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory pip",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"
+          },
+          "Fingerprint": "sha256:bfc8a946311cb998540fab1a8bea2e000422a13a3492e97614c953e054949ba5",
+          "Title": "django: potential SQL injection via StringAgg(delimiter)",
+          "Description": "Django 1.11 before 1.11.28, 2.2 before 2.2.10, and 3.0 before 3.0.3 allows SQL Injection if untrusted data is used as a StringAgg delimiter (e.g., in Django applications that offer downloads of data as a series of rows with a user-specified column delimiter). By passing a suitably crafted delimiter to a contrib.postgres.aggregates.StringAgg instance, it was possible to break escaping and inject malicious SQL.",
+          "Severity": "CRITICAL",
+          "CweIDs": [
+            "CWE-89"
+          ],
+          "VendorSeverity": {
+            "bitnami": 4,
+            "ghsa": 4,
+            "nvd": 4,
+            "redhat": 3,
+            "ubuntu": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V3Score": 9.8
+            },
+            "ghsa": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V40Vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
+              "V3Score": 9.8,
+              "V40Score": 9.3
+            },
+            "nvd": {
+              "V2Vector": "AV:N/AC:L/Au:N/C:P/I:P/A:P",
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V2Score": 7.5,
+              "V3Score": 9.8
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V3Score": 9.8
+            }
+          },
+          "References": [
+            "http://www.openwall.com/lists/oss-security/2020/02/03/1",
+            "https://access.redhat.com/security/cve/CVE-2020-7471",
+            "https://docs.djangoproject.com/en/3.0/releases/security",
+            "https://docs.djangoproject.com/en/3.0/releases/security/",
+            "https://github.com/advisories/GHSA-hmr4-m2h5-33qx",
+            "https://github.com/django/django",
+            "https://github.com/django/django/commit/001b0634cd309e372edb6d7d95d083d02b8e37bd",
+            "https://github.com/django/django/commit/505826b469b16ab36693360da9e11fd13213421b",
+            "https://github.com/django/django/commit/c67a368c16e4680b324b4f385398d638db4d8147",
+            "https://github.com/django/django/commit/eb31d845323618d688ad429479c6dda973056136",
+            "https://github.com/pypa/advisory-database/tree/main/vulns/django/PYSEC-2020-35.yaml",
+            "https://groups.google.com/forum/#!topic/django-announce/X45S86X5bZI",
+            "https://groups.google.com/forum/#%21topic/django-announce/X45S86X5bZI",
+            "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/4A2AP4T7RKPBCLTI2NNQG3T6MINDUUMZ",
+            "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/4A2AP4T7RKPBCLTI2NNQG3T6MINDUUMZ/",
+            "https://nvd.nist.gov/vuln/detail/CVE-2020-7471",
+            "https://seclists.org/bugtraq/2020/Feb/30",
+            "https://security.gentoo.org/glsa/202004-17",
+            "https://security.netapp.com/advisory/ntap-20200221-0006",
+            "https://security.netapp.com/advisory/ntap-20200221-0006/",
+            "https://ubuntu.com/security/notices/USN-4264-1",
+            "https://usn.ubuntu.com/4264-1",
+            "https://usn.ubuntu.com/4264-1/",
+            "https://www.cve.org/CVERecord?id=CVE-2020-7471",
+            "https://www.debian.org/security/2020/dsa-4629",
+            "https://www.djangoproject.com/weblog/2020/feb/03/security-releases",
+            "https://www.djangoproject.com/weblog/2020/feb/03/security-releases/",
+            "https://www.openwall.com/lists/oss-security/2020/02/03/1"
+          ],
+          "PublishedDate": "2020-02-03T12:15:26.993Z",
+          "LastModifiedDate": "2026-06-17T03:24:50.777Z"
+        }
+      ]
+    }
+  ]
+}

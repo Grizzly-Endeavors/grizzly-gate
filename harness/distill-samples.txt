@@ -25,3 +25,61 @@ For each check: the literal terminal text, then the exact JSON an agent receives
 
 --- agent (get_check_output JSON, verbatim) ---
 {"findings":[{"message":"crate 'anyhow = 1.0.102' is explicitly banned","rule":"banned","severity":"error"}],"has_more":false,"mode":"findings","total":1}
+
+================ scan:semgrep ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: /src/app.py:3:12
+  rule: python.lang.security.audit.dangerous-subprocess-use-audit
+  message: Detected subprocess function 'Popen' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+- severity: error
+  loc: /src/app.py:3:40
+  rule: python.lang.security.audit.subprocess-shell-true
+  message: Found 'subprocess' function 'Popen' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":12,"file":"/src/app.py","line":3,"message":"Detected subprocess function 'Popen' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.","rule":"python.lang.security.audit.dangerous-subprocess-use-audit","severity":"error"},{"col":40,"file":"/src/app.py","line":3,"message":"Found 'subprocess' function 'Popen' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.","rule":"python.lang.security.audit.subprocess-shell-true","severity":"error"}],"has_more":false,"mode":"findings","total":2}
+
+================ scan:trivy-fs ================
+
+--- terminal (FAILURES block, verbatim) ---
+- severity: error
+  loc: requirements.txt
+  rule: CVE-2019-14234
+  message: Django 2.2.0: Django: SQL injection possibility in key and index lookups for JSONField/HStoreField (fix: 1.11.23, 2.1.11, 2.2.4)
+- severity: error
+  loc: requirements.txt
+  rule: CVE-2019-19844
+  message: Django 2.2.0: Django: crafted email address allows account takeover (fix: 1.11.27, 2.2.9, 3.0.1)
+- severity: error
+  loc: requirements.txt
+  rule: CVE-2020-7471
+  message: Django 2.2.0: django: potential SQL injection via StringAgg(delimiter) (fix: 1.11.28, 2.2.10, 3.0.3)
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"file":"requirements.txt","message":"Django 2.2.0: Django: SQL injection possibility in key and index lookups for JSONField/HStoreField (fix: 1.11.23, 2.1.11, 2.2.4)","rule":"CVE-2019-14234","severity":"error"},{"file":"requirements.txt","message":"Django 2.2.0: Django: crafted email address allows account takeover (fix: 1.11.27, 2.2.9, 3.0.1)","rule":"CVE-2019-19844","severity":"error"},{"file":"requirements.txt","message":"Django 2.2.0: django: potential SQL injection via StringAgg(delimiter) (fix: 1.11.28, 2.2.10, 3.0.3)","rule":"CVE-2020-7471","severity":"error"}],"has_more":false,"mode":"findings","total":3}
+
+================ scan:osv-scanner ================
+
+--- terminal (FAILURES block, verbatim) ---
+- rule: PYSEC-2019-10
+  message: django 2.2.0 (PyPI): PYSEC-2019-10, GHSA-6c7v-2f49-8h26 [CVSS 6.9]
+- rule: PYSEC-2019-11
+  message: django 2.2.0 (PyPI): PYSEC-2019-11, GHSA-c4qh-4vgv-qc6g [CVSS 8.7]
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"message":"django 2.2.0 (PyPI): PYSEC-2019-10, GHSA-6c7v-2f49-8h26 [CVSS 6.9]","rule":"PYSEC-2019-10"},{"message":"django 2.2.0 (PyPI): PYSEC-2019-11, GHSA-c4qh-4vgv-qc6g [CVSS 8.7]","rule":"PYSEC-2019-11"}],"has_more":false,"mode":"findings","total":2}
+
+================ scan:gitleaks ================
+
+--- terminal (FAILURES block, verbatim) ---
+- loc: config.ini:2:9
+  rule: stripe-access-token
+  message: Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data.
+- loc: config.ini:1:16
+  rule: github-pat
+  message: Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.
+
+--- agent (get_check_output JSON, verbatim) ---
+{"findings":[{"col":9,"file":"config.ini","line":2,"message":"Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data.","rule":"stripe-access-token"},{"col":16,"file":"config.ini","line":1,"message":"Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.","rule":"github-pat"}],"has_more":false,"mode":"findings","total":2}
