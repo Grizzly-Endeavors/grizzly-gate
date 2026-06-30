@@ -3,6 +3,7 @@
 **Date:** 2026-06-25
 **Status:** accepted
 **Amends:** [ADR-028](028-centralized-ci-gate.md)
+**Amended by:** [ADR-036](036-honest-map-git-listing.md) — the walk scopes to the clean-checkout content (the git index), not the raw filesystem. The anti-evasion property below is preserved (a `.gitignore` still cannot hide a *tracked* file); only locally-ignored *untracked* artifacts now fall out of scope.
 **Adapted from:** [grizzly-platform ADR-029](https://github.com/Grizzly-Endeavors/grizzly-platform/blob/master/docs/decisions/029-gate-config-honest-map.md).
 
 ## Context
@@ -36,7 +37,7 @@ A lazy or hostile author (including an LLM taking every shortcut not explicitly 
    ```
 
 2. **Independent verification in the harness, hostile by construction.** The harness walks the whole tree and establishes what is *actually* present, then compares to the declaration. It is deliberately implemented in the trusted harness, not delegated to a repo-influenceable tool, and:
-   - does **not** honor the repo's `.gitignore` (a repo cannot ignore its way out of detection — only an Ops-owned `skip_dirs` list of dependency/build/VCS dirs is skipped);
+   - scopes to the clean-checkout content (the git index — tracked files plus untracked-but-not-ignored files), so a repo cannot ignore its way out of detection: a `.gitignore` never hides a *tracked* file (a `git add -f`'d file is still seen). It falls back to a raw-filesystem walk on non-repo sources, skipping only an Ops-owned `skip_dirs` list of dependency/build/VCS dirs. *(Refined by [ADR-036](036-honest-map-git-listing.md); originally a raw-filesystem walk that did not honor `.gitignore` at all.)*
    - does **not** follow symlinks (no tree escape, no loops);
    - matches extensions case-insensitively, and classifies extensionless executables by shebang interpreter.
 
