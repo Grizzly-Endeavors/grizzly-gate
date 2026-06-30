@@ -5,8 +5,14 @@
 //! mismatch. It is deliberately implemented in the harness (not delegated to a
 //! repo-influenceable tool) and is hostile by construction:
 //!
-//! - it does **not** honor the repo's `.gitignore` (a repo cannot ignore its
-//!   way out of detection — only an Ops-owned `skip_dirs` list is skipped);
+//! - it scopes to the **clean-checkout content** — the git index (tracked files
+//!   plus untracked-but-not-ignored files), exactly what a fresh `git clone`
+//!   would hold — so a `.gitignore` cannot hide a *tracked* file from detection
+//!   (`git add -f`'d code is still listed), while a local pre-check no longer
+//!   trips over build artifacts that would never reach CI. It falls back to a
+//!   hostile raw-filesystem walk (skipping only an Ops-owned `skip_dirs` list)
+//!   when `source` is not a git work tree — strictly more inclusive, so
+//!   completeness can only tighten under fallback. See ADR-036.
 //! - it does **not** follow symlinks (no escaping the tree, no loops);
 //! - extension matching is case-insensitive (`.RS` == `.rs`);
 //! - extensionless executables are classified by shebang interpreter.
@@ -17,8 +23,11 @@
 //! `tsconfig` (type-aware linting needs the TS program). Any one is fatal.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use walkdir::WalkDir;
 
@@ -78,26 +87,14 @@ pub fn verify(
     let mut ts_without_config: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
 
-    let walker = WalkDir::new(source).follow_links(false).into_iter();
-    for entry in walker.filter_entry(|e| !is_skipped_dir(e, source, &tree.detect.skip_dirs)) {
-        // A walk error means we cannot establish what's actually in the tree —
-        // fail closed rather than pass on a partial view.
-        let entry =
-            entry.map_err(|e| HonestMapFailure::whole(format!("walking source tree: {e}")))?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        let rel = match path.strip_prefix(source) {
-            Ok(r) => r.to_path_buf(),
-            Err(_) => continue,
-        };
+    for rel in enumerate_files(source, &tree.detect.skip_dirs)? {
         // Never treat the declaration itself as code.
         if rel == Path::new(crate::gateconfig::FILE) {
             continue;
         }
+        let path = source.join(&rel);
 
-        let hit = classify(path, &ext, &shebang);
+        let hit = classify(&path, &ext, &shebang);
         match hit {
             Some(Hit::Adapter(lang)) => match covering(&rel, &lang, projects) {
                 None => undeclared.push((lang, rel)),
@@ -106,7 +103,7 @@ pub fn verify(
                     // TypeScript — either a standalone `.ts`/`.tsx` file or a
                     // `.svelte` component whose `<script>` uses `lang="ts"`. Both
                     // need the TS program for type-aware checking (tsc / svelte-check).
-                    let has_ts = is_typescript(&rel) || (is_svelte(&rel) && svelte_uses_ts(path));
+                    let has_ts = is_typescript(&rel) || (is_svelte(&rel) && svelte_uses_ts(&path));
                     if lang == "node" && has_ts && p.tsconfig.is_none() {
                         ts_without_config.insert(p.rel_path.clone());
                     }
@@ -251,6 +248,96 @@ fn render_violations(items: &[(String, PathBuf)]) -> String {
         .map(|(lang, p)| format!("    [{lang}] {}", p.display()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The repo-relative regular-file paths the honest map must classify, with
+/// Ops-owned `skip_dirs` (and `.git`) pruned and symlinks excluded.
+///
+/// In a git work tree this is the **clean-checkout content** — tracked files plus
+/// untracked-but-not-ignored files (see [`git_listing`]) — so a `.gitignore`
+/// cannot hide a *tracked* file from detection, while a local pre-check stops
+/// tripping over build artifacts a fresh `git clone` would never hold. Falls back
+/// to a hostile raw-filesystem walk when `source` is not a git work tree (or git
+/// errors): that walk is strictly more inclusive, so completeness can only
+/// tighten under fallback. See ADR-036.
+fn enumerate_files(source: &Path, skip_dirs: &[String]) -> Result<Vec<PathBuf>, HonestMapFailure> {
+    match git_listing(source) {
+        Some(rels) => Ok(rels
+            .into_iter()
+            .filter(|rel| !rel_is_skipped(rel, skip_dirs) && is_regular_file(&source.join(rel)))
+            .collect()),
+        None => filesystem_walk(source, skip_dirs),
+    }
+}
+
+/// The git index of `source` as repo-relative paths: tracked files (`--cached`)
+/// plus untracked-but-not-ignored files (`--others --exclude-standard`). `--z`
+/// keeps the parse byte-exact so a non-UTF-8 filename cannot slip detection.
+/// `safe.directory=*` neutralizes git's dubious-ownership guard (the local
+/// pre-check mounts a host-owned tree into a root container); it governs only
+/// whether git will operate, never which files are listed. `None` means "not a
+/// git work tree, or git failed" — the caller then falls back to the raw walk.
+fn git_listing(source: &Path) -> Option<Vec<PathBuf>> {
+    let out = Command::new("git")
+        .current_dir(source)
+        .args([
+            "-c",
+            "safe.directory=*",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        out.stdout
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| PathBuf::from(OsStr::from_bytes(s)))
+            .collect(),
+    )
+}
+
+/// The original hostile walk: every regular file under `source`, pruning
+/// Ops-owned `skip_dirs` and `.git`, never following symlinks. A walk error fails
+/// closed rather than passing on a partial view of the tree.
+fn filesystem_walk(source: &Path, skip_dirs: &[String]) -> Result<Vec<PathBuf>, HonestMapFailure> {
+    let mut out = Vec::new();
+    let walker = WalkDir::new(source).follow_links(false).into_iter();
+    for entry in walker.filter_entry(|e| !is_skipped_dir(e, source, skip_dirs)) {
+        let entry =
+            entry.map_err(|e| HonestMapFailure::whole(format!("walking source tree: {e}")))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if let Ok(rel) = entry.path().strip_prefix(source) {
+            out.push(rel.to_path_buf());
+        }
+    }
+    Ok(out)
+}
+
+/// Whether any component of a repo-relative path is an Ops-owned skip dir (or
+/// `.git`) — the git-listing equivalent of [`is_skipped_dir`]'s directory prune.
+fn rel_is_skipped(rel: &Path, skip_dirs: &[String]) -> bool {
+    rel.components().any(|c| {
+        c.as_os_str()
+            .to_str()
+            .is_some_and(|name| name == ".git" || skip_dirs.iter().any(|d| d == name))
+    })
+}
+
+/// Whether `path` is an existing regular file (not a symlink, dir, or absent).
+/// `symlink_metadata` does not follow symlinks, preserving the no-tree-escape
+/// guarantee for git-listed entries (which may include tracked symlinks).
+fn is_regular_file(path: &Path) -> bool {
+    path.symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_file())
 }
 
 /// Whether a directory entry is an Ops-owned skip dir (vendor/build/VCS). `.git`
@@ -600,5 +687,83 @@ mod tests {
         ));
         assert!(!svelte_script_is_ts("<script>let x;</script>"));
         assert!(!svelte_script_is_ts("<p>lang=\"ts\" in markup only</p>"));
+    }
+
+    // --- git-listing mode (ADR-036) -----------------------------------------
+    //
+    // The scratch dirs above are not git repos, so they exercise the filesystem
+    // fallback. These tests init a real repo so `enumerate_files` takes the git
+    // path, and pin the property that matters: a `.gitignore` cannot hide a
+    // *tracked* file, while locally-ignored *untracked* files fall out of scope.
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .status()
+            .expect("git binary available for tests");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn git_mode_excludes_ignored_untracked_files() {
+        let root = scratch("git-ignored");
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q"]);
+        std::fs::write(root.join(".gitignore"), "*.py\n").unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        // An untracked, ignored stray .py fails the raw walk; in git mode it is
+        // not part of the clean checkout, so it is excluded and the gate passes.
+        std::fs::write(root.join("scratch.py"), "x = 1").unwrap();
+        let projects = vec![proj("rust", "")];
+        assert!(verify(&root, &tree(), &projects).is_ok());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn git_mode_flags_force_added_ignored_file() {
+        let root = scratch("git-force-add");
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q"]);
+        std::fs::write(root.join(".gitignore"), "*.py\n").unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        // The evasion ADR-029 closes: a .py matching .gitignore but force-added
+        // (tracked) IS in the clean checkout, so it must still be flagged.
+        std::fs::write(root.join("hidden.py"), "x = 1").unwrap();
+        git(&root, &["add", "-f", "hidden.py"]);
+        let projects = vec![proj("rust", "")];
+        let err = verify(&root, &tree(), &projects).unwrap_err().to_string();
+        assert!(err.contains("hidden.py"), "{err}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn git_mode_flags_untracked_unignored_code() {
+        let root = scratch("git-untracked");
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q"]);
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        // A brand-new, not-yet-committed, not-ignored .go reaches CI once the dev
+        // commits, so the local pre-check still catches it before commit.
+        std::fs::write(root.join("server.go"), "package main").unwrap();
+        let projects = vec![proj("rust", "")];
+        let err = verify(&root, &tree(), &projects).unwrap_err().to_string();
+        assert!(err.contains("server.go"), "{err}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn git_mode_prunes_skip_dirs() {
+        let root = scratch("git-skip");
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        git(&root, &["init", "-q"]);
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        // Even a tracked file under an Ops skip_dir stays out of detection,
+        // matching the fallback walk's directory prune.
+        std::fs::write(root.join("target/gen.go"), "package main").unwrap();
+        git(&root, &["add", "-f", "target/gen.go"]);
+        let projects = vec![proj("rust", "")];
+        assert!(verify(&root, &tree(), &projects).is_ok());
+        std::fs::remove_dir_all(&root).ok();
     }
 }
