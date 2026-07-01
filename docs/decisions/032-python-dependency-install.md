@@ -22,11 +22,13 @@ This ADR adds the missing install step. The owner picked **uv** as the installer
 The Python adapter gains a `deps` check (first in the list, mirroring Node's `npm ci`) that creates `.venv` in the project dir and installs the repo into it:
 
 ```sh
-uv venv .venv
+uv venv .venv --clear
 [ -f requirements.txt ] && uv pip install -r requirements.txt
 grep -qE "^\[(project|build-system)\]" pyproject.toml && uv pip install -e .
 uv pip install "pytest==$GATE_PYTEST_VERSION"
 ```
+
+- **`--clear` is mandatory for idempotency, not a nicety.** The venv is left in the working tree between runs (below), and `uv venv` — unlike `npm ci`, which happily wipes and reinstalls `node_modules` — *errors out* on a pre-existing venv (`error: A virtual environment already exists ... Use --clear`). Without `--clear` the deps check succeeds on the first run and then fails on every run after (cascading into mypy/pytest, which invoke `.venv/bin/...`), making the gate unusable for any repo whose `.venv` persists. `--clear` rebuilds from scratch each run, which is the faithful `npm ci` analog anyway: a clean, reproducible dependency set rather than an accreted one.
 
 - **uv, not pip**, for speed (this runs on every gate) and a real resolver. uv is a **gate-side implementation detail**: it uses the *pip interface* (`uv pip install` against a standard `requirements.txt` / `pyproject.toml`), **not** the uv-native project interface (`uv sync`/`uv.lock`). A scanned repo is therefore **never required to adopt uv** — Poetry/PDM/plain-pip repos install identically. uv is pinned in the Dockerfile like every other tool, and `UV_PYTHON_PREFERENCE=only-system` + `UV_PYTHON_DOWNLOADS=never` force it onto the image's pinned Python 3.11 (no network Python download → matches `mypy python_version = 3.11`).
 - **Hybrid first-party resolution.** If the repo is an installable package (`pyproject.toml` has `[project]` or `[build-system]`) it is editable-installed (`-e .`), which covers `src/` layouts and resolves first-party imports via the venv. If it is a loose tree (e.g. a bare `backend/` package with a `requirements.txt` and `pythonpath = .`), the deps come from `requirements.txt` and first-party code resolves by **rootdir** (see the pytest/mypy wiring). Both are installed when both are present (editable picks up `[project.dependencies]`; `requirements.txt` covers apps that pin there). This was chosen over *strict editable-only* (rejected: breaks the very common loose-layout FastAPI backend until it adds packaging) and *deps+pythonpath only* (rejected: no editable means `src/` layouts break).

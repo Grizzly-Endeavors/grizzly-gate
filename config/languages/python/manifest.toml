@@ -22,9 +22,17 @@ shebangs = ["python", "python3"]
 # `--python-executable` flag like mypy) at the Dockerfile-pinned version, exposed
 # as $GATE_PYTEST_VERSION so the pin stays single-sourced. `.venv` is in
 # detect.toml skip_dirs (honest-map-safe) and excluded from trivy-fs. See ADR-032.
+#
+# `uv venv --clear` is mandatory, not optional: the gate mounts the working tree
+# read-write and leaves `.venv` on disk, so on every run after the first the dir
+# already exists — and `uv venv` (unlike `npm ci`) errors out on a pre-existing
+# venv instead of reusing it. Without --clear the deps check fails on the second
+# run onward, cascading into mypy/pytest (which invoke `.venv/bin/...`). --clear
+# rebuilds the venv from scratch each run, which is the faithful `npm ci` analog
+# anyway: a clean, reproducible dependency set, not an accreted one.
 [[checks]]
 name = "deps"
-cmd = "sh -c 'set -eu; uv venv .venv; if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi; if grep -qE \"^\\[(project|build-system)\\]\" pyproject.toml; then uv pip install -e .; fi; uv pip install \"pytest==$GATE_PYTEST_VERSION\"'"
+cmd = "sh -c 'set -eu; uv venv .venv --clear; if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi; if grep -qE \"^\\[(project|build-system)\\]\" pyproject.toml; then uv pip install -e .; fi; uv pip install \"pytest==$GATE_PYTEST_VERSION\"'"
 
 [[checks]]
 name = "ruff"
