@@ -17,6 +17,17 @@ version = 2
 # fix them. Yanked crates warn rather than fail for the same reason.
 unmaintained = "none"
 yanked = "warn"
+# Fleet-accepted vulnerability advisories (see ADR-034: the gate is otherwise
+# vuln-only and blocks on every real vulnerability). Each entry here is a real
+# vulnerability accepted anyway because no fixed release exists upstream. Keep
+# this list short and justified; remove an entry once a fix lands.
+ignore = [
+  # rsa: Marvin Attack timing sidechannel (CVE-2023-49092). No fixed rsa
+  # release exists upstream as of this writing; pulled transitively via
+  # sqlx-mysql's auth handshake in multiple fleet repos. Exploitation requires
+  # network-position timing measurement against the affected code path.
+  "RUSTSEC-2023-0071",
+]
 
 [licenses]
 version = 2
