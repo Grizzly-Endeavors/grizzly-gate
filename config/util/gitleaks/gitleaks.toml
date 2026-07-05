@@ -5,3 +5,18 @@ title = "grizzly-gate gitleaks ruleset"
 
 [extend]
 useDefault = true
+
+[allowlist]
+description = "pure generated build output, not vendored/third-party code"
+# dist/build/.svelte-kit hold build OUTPUT regenerated deterministically from
+# first-party source, not dependency code — scanning them for secrets buys
+# nothing (unlike node_modules/vendor, kept covered as a real supply-chain
+# vector). .svelte-kit specifically can be recreated mid-run: the node
+# adapter's `deps` check (`npm ci`, which runs BEFORE this scanner) triggers a
+# SvelteKit project's `prepare` script (`svelte-kit sync`), writing
+# `.svelte-kit/generated/**` into the source tree even on a clean CI checkout.
+paths = [
+  '''(^|/)dist/''',
+  '''(^|/)build/''',
+  '''(^|/)\.svelte-kit/''',
+]

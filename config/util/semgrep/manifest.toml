@@ -6,5 +6,17 @@ scope = "source"
 # --json emits machine-readable findings on stdout; --error keeps the failing
 # exit code (the verdict), so adding JSON is presentation-only. The harness
 # distills `results[]` into normalized findings.
-cmd = "semgrep scan --json --error --quiet --config {config}/rules {source}"
+#
+# --exclude dist/build/.svelte-kit: these hold pure build OUTPUT, regenerated
+# deterministically from first-party source — not vendored/third-party code, so
+# scanning them for hidden malicious code buys nothing. Unlike `node_modules`/
+# `vendor`/`target` (still scanned; a real supply-chain vector), these dirs can
+# also be recreated mid-run: the node adapter's `deps` check (`npm ci`) runs
+# BEFORE this scanner and triggers a SvelteKit project's `prepare` script
+# (`svelte-kit sync`), which writes `.svelte-kit/generated/**` into the source
+# tree — a fresh, gate-owned build artifact that would otherwise false-positive
+# on framework-internal codegen (e.g. dynamic dispatch in generated router glue),
+# even on a byte-for-byte clean CI checkout. Scoped narrowly on purpose; this is
+# not the same list as `skip_dirs`.
+cmd = "semgrep scan --json --error --quiet --exclude=dist --exclude=build --exclude=.svelte-kit --config {config}/rules {source}"
 output = { parser = "semgrep" }
