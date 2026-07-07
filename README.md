@@ -154,7 +154,7 @@ The gate is the pattern; these are the platform's concrete choices for running i
 | Concern | Choice |
 |---|---|
 | Run the gate | self-hosted runners (ARC) via a DinD sidecar |
-| Build the gate image | Argo Workflows + Kaniko, in-cluster |
+| Build the gate image | Argo Workflows + rootless BuildKit, in-cluster |
 | Registry (signature storage) | zot (OCI 1.1 referrers) — [ADR-027](https://github.com/Grizzly-Endeavors/grizzly-platform/blob/master/docs/decisions/027-registry-zot.md) |
 | Signing key | OpenBao + External Secrets |
 | Deploy boundary | Kyverno `verifyImages` |
