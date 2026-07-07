@@ -37,8 +37,15 @@ cmd = "sh -c 'set -eu; uv venv .venv --clear; if [ -f requirements.txt ]; then u
 [[checks]]
 name = "ruff"
 # --output-format json emits diagnostics on stdout; ruff still exits non-zero on
-# any violation, so the verdict is unchanged.
-cmd = "ruff check --output-format json --config {config}/ruff.toml ."
+# any violation, so the verdict is unchanged. --extend-exclude (NOT --exclude:
+# verified on ruff 0.15 that --exclude REPLACES ruff's own default exclude list
+# rather than adding to it, which would silently drop .venv/.git/etc.) forwards
+# the Ops-owned skip_dirs so ruff skips the same generated/vendor dirs the
+# honest-map walk does. Ruff's built-in defaults already cover .venv/venv/
+# .mypy_cache/.pytest_cache/.ruff_cache/.tox/dist/node_modules, but NOT target/
+# vendor/__pycache__/.cargo/.gradle/build/.svelte-kit — {skip_dirs} closes that
+# gap regardless of which subset ruff's own defaults happen to cover.
+cmd = "ruff check --output-format json --extend-exclude {skip_dirs} --config {config}/ruff.toml ."
 output = { parser = "ruff" }
 
 [[checks]]
@@ -47,7 +54,17 @@ name = "mypy"
 # deps (in .venv) while mypy itself runs from its own pinned pipx venv.
 # --output json emits newline-delimited diagnostics on stdout (mypy 1.11+); it
 # still exits non-zero on type errors, so the verdict is unchanged.
-cmd = "mypy --output json --config-file {config}/mypy.ini --python-executable .venv/bin/python ."
+#
+# mypy's --exclude takes a single regex (matched against relative paths) and
+# only affects RECURSIVE DIRECTORY DISCOVERY, not explicitly-passed files —
+# irrelevant here since this check hands mypy `.` and lets it discover the
+# tree itself. There is no comma-list form like ruff's --extend-exclude, so
+# GATE_SKIP_DIRS (same mechanism eslint uses) carries the Ops-owned skip_dirs
+# comma list and the `sh -c` wrapper turns it into a `(^|/)(a|b|c)(/|$)`
+# alternation via `tr` at run time, so mypy skips the same generated/vendor
+# dirs the honest-map walk does.
+cmd = "sh -c 'exec mypy --output json --config-file {config}/mypy.ini --python-executable .venv/bin/python --exclude \"(^|/)($(printf %s \"$GATE_SKIP_DIRS\" | tr \",\" \"|\"))(/|$)\" .'"
+env = { GATE_SKIP_DIRS = "{skip_dirs}" }
 output = { parser = "mypy" }
 
 [[checks]]

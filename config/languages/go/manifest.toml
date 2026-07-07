@@ -18,8 +18,10 @@ name = "fmt"
 # golangci-lint v2 owns formatting via its `formatters` section (gofumpt — the
 # stricter rustfmt analog). `fmt --diff` prints the needed changes and exits
 # non-zero when any file is unformatted. `-c` forces the gate config and skips
-# repo-config discovery. golangci-lint excludes vendor/ by default, so vendored
-# deps are not format-checked.
+# repo-config discovery. `.golangci.yml`'s `formatters.exclusions.paths` keeps
+# vendor/build-artifact dirs (the Ops-owned skip_dirs, mirrored by hand — see
+# ADR-039) out of the reformat set; golangci-lint does NOT exclude `vendor/`
+# (or `node_modules`/`target`/`build`) by default, verified against 2.12.2.
 cmd = "golangci-lint fmt -c {config}/.golangci.yml --diff"
 
 [[checks]]
@@ -27,6 +29,7 @@ name = "lint"
 # The clippy analog: a maximal linter set (errcheck/gosec/staticcheck/revive/
 # gocritic/…) with all findings blocking. `-c` forces the gate's `.golangci.yml`
 # and disables discovery of the repo's own config — the config-forcing guarantee.
+# `linters.exclusions.paths` (same file) mirrors the skip_dirs skipped above.
 cmd = "golangci-lint run --path-mode abs --output.json.path stdout -c {config}/.golangci.yml ./..."
 # --output.json.path stdout emits the issue document on stdout (golangci appends
 # a short human summary the harness ignores); it still exits non-zero on any

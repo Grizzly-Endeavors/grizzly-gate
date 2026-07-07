@@ -463,7 +463,7 @@ fn run_checks(
         // For node, resolve the tsconfig the checks use. A repo-declared tsconfig
         // is wrapped so its module/path resolution is honored while the gate's
         // strictness is force-overridden; the wrapper is cleaned up after.
-        let ts = resolve_tsconfig(adapter, project)?;
+        let ts = resolve_tsconfig(adapter, project, &tree.detect.skip_dirs)?;
         let subst = Subst {
             source: Some(&proj_str),
             image: None,
@@ -583,6 +583,7 @@ const TS_WRAPPER: &str = ".grizzly-gate.tsconfig.json";
 fn resolve_tsconfig(
     adapter: &config::LanguageAdapter,
     project: &ResolvedProject,
+    skip_dirs: &[String],
 ) -> Result<Option<ResolvedTsconfig>> {
     if adapter.name != "node" {
         return Ok(None);
@@ -596,12 +597,38 @@ fn resolve_tsconfig(
         }));
     };
 
+    // The wrapper's `exclude` must be the Ops-owned skip_dirs UNION whatever
+    // the repo's own tsconfig already excludes — `extends` does NOT merge
+    // `include`/`exclude` between parent and child: verified (via
+    // `tsc --showConfig`, pinned 6.0.3) that when both the wrapper and the
+    // repo config set `exclude`, the child's value fully REPLACES the
+    // parent's rather than adding to it. Naively adding `"exclude":
+    // [...skip_dirs]` to the wrapper would therefore silently drop any
+    // exclude the repo's own tsconfig declared. See ADR-039.
+    //
+    // `tsc --showConfig --project <repo_ts>` resolves the repo's own config
+    // exactly the way the real `tsc`/`svelte-check` checks will (same pinned
+    // binary), which sidesteps two problems a hand-rolled parse of the repo's
+    // tsconfig.json would hit: tsconfig.json is commonly JSONC (comments/
+    // trailing commas — `serde_json` chokes on both), and a repo's tsconfig
+    // may itself `extend` another config that owns the `exclude` — verified
+    // `--showConfig` resolves that chain transitively, not just one level.
+    let repo_exclude = repo_tsconfig_exclude(adapter, project, repo_ts)?;
+    let mut exclude: Vec<String> = skip_dirs.to_vec();
+    for d in repo_exclude {
+        if !exclude.contains(&d) {
+            exclude.push(d);
+        }
+    }
+
     // Wrap the repo tsconfig: `extends` it for module/path resolution, then
     // force every strict compiler option locally. `extends` is overridden
     // per-key by these locals, and `strict` is expanded into its full family so
     // a repo cannot opt out of an individual sub-flag (e.g. strictNullChecks).
     // tsc's default `include` (every TS file under the wrapper's dir, minus
-    // node_modules) means a repo cannot shrink the typechecked set either.
+    // node_modules) means a repo cannot shrink the typechecked set either;
+    // `exclude` above additionally keeps skip_dirs (and the repo's own
+    // excludes) out of the typechecked set without dropping either.
     let wrapper = serde_json::json!({
         "extends": repo_ts.to_string_lossy(),
         "compilerOptions": {
@@ -617,7 +644,8 @@ fn resolve_tsconfig(
             "alwaysStrict": true,
             "forceConsistentCasingInFileNames": true,
             "skipLibCheck": true,
-        }
+        },
+        "exclude": exclude,
     });
     let path = project.abs_path.join(TS_WRAPPER);
     std::fs::write(
@@ -630,6 +658,62 @@ fn resolve_tsconfig(
         arg: path.to_string_lossy().to_string(),
         temp: Some(path),
     }))
+}
+
+/// The `exclude` array the repo's own tsconfig resolves to, per `tsc`'s own
+/// config resolution (`--showConfig`, which prints the effective config
+/// without emitting anything). Using the real, pinned `tsc` binary — rather
+/// than parsing `repo_ts` by hand — gets JSONC tolerance (comments/trailing
+/// commas) and transitive `extends` resolution for free, both verified
+/// empirically (see `resolve_tsconfig` and ADR-039). Returns an empty list if
+/// the repo's tsconfig declares no `exclude` anywhere in its `extends` chain
+/// (confirmed: an absent `exclude` shows up as a missing key in `--showConfig`
+/// output, not a populated default list — tsc's default excludes are applied
+/// later, at file-resolution time, not reflected here).
+fn repo_tsconfig_exclude(
+    adapter: &config::LanguageAdapter,
+    project: &ResolvedProject,
+    repo_ts: &Path,
+) -> Result<Vec<String>> {
+    let tsc = adapter.config_dir.join("node_modules/.bin/tsc");
+    let output = ProcessCommand::new(&tsc)
+        .arg("--showConfig")
+        .arg("--project")
+        .arg(repo_ts)
+        .current_dir(&project.abs_path)
+        .output()
+        .with_context(|| {
+            format!(
+                "running {} --showConfig on the repo tsconfig {}",
+                tsc.display(),
+                repo_ts.display()
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "{} --showConfig --project {} failed (exit {:?}): {}",
+            tsc.display(),
+            repo_ts.display(),
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).with_context(|| {
+        format!(
+            "parsing `{} --showConfig --project {}` output as JSON",
+            tsc.display(),
+            repo_ts.display()
+        )
+    })?;
+    Ok(parsed
+        .get("exclude")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// Source-of-truth `ESLint` flat config filename (a template, not a live `.mjs`)
@@ -1052,6 +1136,101 @@ mod tests {
             "the {{skip_dirs}} token is replaced in env values: {:?}",
             r.output
         );
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        // Ephemeral, uniquely-named test scratch dir (removed at end of the
+        // test); not a security-sensitive temp file. Mirrors the `scratch`
+        // helper in config.rs/gateconfig.rs/detect.rs.
+        // nosemgrep: temp-dir
+        std::env::temp_dir().join(format!("gate-main-{tag}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn resolve_tsconfig_unions_skip_dirs_with_the_repos_own_exclude() {
+        // Follow-up to the eslint/ruff/mypy/golangci-lint skip_dirs wiring
+        // (ADR-039, issue #3): the wrapper tsconfig `resolve_tsconfig` writes
+        // must exclude the Ops-owned skip_dirs WITHOUT dropping whatever the
+        // repo's own tsconfig already excludes. `extends` does not merge
+        // `exclude` between parent and child (verified with a real `tsc
+        // --showConfig`, pinned 6.0.3 — the child's value fully replaces the
+        // parent's), so naively setting `"exclude": [...skip_dirs]` on the
+        // wrapper would silently drop a repo's real exclude entries.
+        //
+        // A stub `tsc` stands in for `--showConfig` here (real TypeScript is
+        // not a harness build dependency), but it exercises the actual
+        // `resolve_tsconfig`/`repo_tsconfig_exclude` code path — real
+        // `Command` spawn, real file write, real JSON parse of the result —
+        // not a mocked-out substitute for that logic.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = scratch("resolve-tsconfig");
+        let config_dir = root.join("config/languages/node");
+        let bin_dir = config_dir.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        // Simulates a repo tsconfig that (possibly via its own `extends` chain,
+        // possibly via JSONC comments `tsc` tolerates but `serde_json` would
+        // not) resolves to `exclude: ["something-else"]`.
+        let stub_tsc = bin_dir.join("tsc");
+        std::fs::write(
+            &stub_tsc,
+            "#!/bin/sh\ncat <<'EOF'\n{\"exclude\": [\"something-else\"]}\nEOF\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&stub_tsc).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&stub_tsc, perms).unwrap();
+
+        let project_dir = root.join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let repo_ts = project_dir.join("tsconfig.json");
+        // Content is irrelevant — the stub tsc ignores its `--project` arg and
+        // always answers with the canned `exclude` above.
+        std::fs::write(&repo_ts, "{}").unwrap();
+
+        let adapter = config::LanguageAdapter {
+            name: "node".to_string(),
+            marker: "package.json".to_string(),
+            config_dir,
+            detect: config::Detect::default(),
+            checks: Vec::new(),
+        };
+        let project = ResolvedProject {
+            language: "node".to_string(),
+            rel_path: PathBuf::new(),
+            abs_path: project_dir,
+            tsconfig: Some(repo_ts),
+        };
+        let skip_dirs = vec![
+            "dist".to_string(),
+            "build".to_string(),
+            ".svelte-kit".to_string(),
+        ];
+
+        let resolved = resolve_tsconfig(&adapter, &project, &skip_dirs)
+            .expect("resolve_tsconfig must succeed against the stub tsc")
+            .expect("a declared repo tsconfig always produces a wrapper");
+
+        let written = std::fs::read_to_string(&resolved.arg).expect("wrapper file must exist");
+        let wrapper: serde_json::Value =
+            serde_json::from_str(&written).expect("wrapper must be valid JSON");
+        let exclude: Vec<String> = wrapper["exclude"]
+            .as_array()
+            .expect("wrapper must set `exclude`")
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+
+        for want in ["dist", "build", ".svelte-kit", "something-else"] {
+            assert!(
+                exclude.iter().any(|e| e == want),
+                "wrapper `exclude` must contain {want:?} (skip_dirs ∪ repo's own exclude): {exclude:?}"
+            );
+        }
+
+        resolved.cleanup();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
