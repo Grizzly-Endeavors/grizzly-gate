@@ -56,6 +56,35 @@ linters:
           - gosec
           - errcheck
 
+    # Ops-owned skip_dirs (config/detect.toml), mirrored here by hand — see
+    # ADR-039. golangci-lint v2 dropped the v1 `issues.exclude-dirs`/
+    # `run.skip-dirs` config keys and has no CLI flag or config-file env-var
+    # expansion to receive the harness's `{skip_dirs}` token (unlike ruff/mypy/
+    # eslint), so this list can't be single-sourced at run time; keep it in
+    # sync with detect.toml by hand. `go list ./...` (which `golangci-lint run`
+    # uses to enumerate packages) already skips dot-/underscore-prefixed dirs
+    # and `testdata` on its own, but does NOT skip `vendor` unless it holds a
+    # real `vendor/modules.txt` at the module root (verified empirically: a
+    # plain directory named `vendor` elsewhere in the tree is linted like any
+    # other package) — so every skip_dirs entry is listed explicitly rather
+    # than relying on partial, version-fragile tool defaults.
+    paths:
+      - "(^|/)node_modules(/|$)"
+      - "(^|/)target(/|$)"
+      - "(^|/)vendor(/|$)"
+      - "(^|/)\\.venv(/|$)"
+      - "(^|/)venv(/|$)"
+      - "(^|/)__pycache__(/|$)"
+      - "(^|/)\\.mypy_cache(/|$)"
+      - "(^|/)\\.pytest_cache(/|$)"
+      - "(^|/)\\.ruff_cache(/|$)"
+      - "(^|/)\\.cargo(/|$)"
+      - "(^|/)\\.gradle(/|$)"
+      - "(^|/)\\.tox(/|$)"
+      - "(^|/)dist(/|$)"
+      - "(^|/)build(/|$)"
+      - "(^|/)\\.svelte-kit(/|$)"
+
 # Formatting (the `rustfmt --check` analog). gofumpt is the stricter superset of
 # gofmt; goimports also enforces import grouping/ordering. Checked by the `fmt`
 # adapter step (`golangci-lint fmt --diff`).
@@ -63,3 +92,25 @@ formatters:
   enable:
     - gofumpt
     - goimports
+
+  # Same Ops-owned skip_dirs list as linters.exclusions.paths above (kept
+  # separate because golangci-lint v2 splits linter and formatter exclusions
+  # into distinct config sections) — without it, `golangci-lint fmt --diff`
+  # would propose reformatting vendored/generated files. See ADR-039.
+  exclusions:
+    paths:
+      - "(^|/)node_modules(/|$)"
+      - "(^|/)target(/|$)"
+      - "(^|/)vendor(/|$)"
+      - "(^|/)\\.venv(/|$)"
+      - "(^|/)venv(/|$)"
+      - "(^|/)__pycache__(/|$)"
+      - "(^|/)\\.mypy_cache(/|$)"
+      - "(^|/)\\.pytest_cache(/|$)"
+      - "(^|/)\\.ruff_cache(/|$)"
+      - "(^|/)\\.cargo(/|$)"
+      - "(^|/)\\.gradle(/|$)"
+      - "(^|/)\\.tox(/|$)"
+      - "(^|/)dist(/|$)"
+      - "(^|/)build(/|$)"
+      - "(^|/)\\.svelte-kit(/|$)"

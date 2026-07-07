@@ -10,9 +10,18 @@
 # module/path layout). When a project sets `tsconfig` in gate-config.json, the
 # harness wraps that tsconfig — honoring its module/path resolution while force-
 # overriding the strict compiler family, so the repo cannot relax strictness. The
-# same wrapped tsconfig drives type-aware eslint (via GATE_TSCONFIG). A node
-# project containing TypeScript must declare its `tsconfig` (harness fails closed
-# otherwise); a JS-only project may omit it and use the gate's `tsconfig.base.json`.
+# same wrapped tsconfig drives type-aware eslint (via GATE_TSCONFIG) and
+# svelte-check. A node project containing TypeScript must declare its `tsconfig`
+# (harness fails closed otherwise); a JS-only project may omit it and use the
+# gate's `tsconfig.base.json`.
+#
+# The wrapper's `exclude` is the Ops-owned skip_dirs UNION whatever the repo's
+# own tsconfig already excludes (harness `resolve_tsconfig`/
+# `repo_tsconfig_exclude`, `harness/src/main.rs`) — NOT skip_dirs alone.
+# `extends` does not merge `exclude` between parent and child (verified via
+# `tsc --showConfig`: the child's value fully replaces the parent's), so tsc and
+# svelte-check both skip the same generated/vendor dirs the honest-map walk
+# does without silently dropping a repo's own exclude. See ADR-039.
 name = "node"
 marker = "package.json"
 
@@ -49,6 +58,9 @@ output = { parser = "eslint" }
 name = "tsc"
 # `--project` carries noEmit/strictness via the (wrapped) tsconfig; passing those
 # as flags too conflicts with `-p` on some tsc versions, so they live in config.
+# The wrapper's `exclude` (skip_dirs ∪ the repo's own excludes — see the header
+# comment above and ADR-039) means generated/vendor dirs are never typechecked,
+# without touching this cmd — the injection point is the tsconfig file itself.
 cmd = "{config}/node_modules/.bin/tsc --project {tsconfig}"
 
 [[checks]]
@@ -60,5 +72,10 @@ name = "svelte-check"
 # check runs for every node project, so it's guarded to no-op when the project
 # has no `.svelte` files (node_modules excluded). A node project whose `.svelte`
 # components use TypeScript must declare a `tsconfig`, or the honest map fails
-# closed (harness `detect`) — the same rule TS files get.
+# closed (harness `detect`) — the same rule TS files get. `--tsconfig` docs its
+# own "only files matched by the files/include/exclude pattern... are
+# diagnosed" — verified empirically this delegates to the same tsconfig
+# resolution tsc uses, so the wrapper's skip_dirs-inclusive `exclude` (see the
+# header comment and ADR-039) keeps generated `.svelte` files (e.g. under
+# `.svelte-kit`) out of this check too, with no cmd/env change needed here.
 cmd = "sh -c 'if [ -n \"$(find . -name \"*.svelte\" -not -path \"./node_modules/*\" -print -quit)\" ]; then exec \"{config}/node_modules/.bin/svelte-check\" --tsconfig \"{tsconfig}\"; fi'"

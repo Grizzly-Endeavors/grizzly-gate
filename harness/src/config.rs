@@ -344,4 +344,99 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
         assert!(load_tree(&root).is_err());
     }
+
+    /// The real, Ops-owned config tree this repo ships (`config/`, a sibling of
+    /// the `harness/` crate) — as opposed to the synthetic scratch trees the
+    /// other tests build. Used to assert facts about the *actual* manifests
+    /// (skip_dirs wiring), not just the loader mechanics.
+    fn real_config_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config")
+    }
+
+    #[test]
+    fn ruff_and_mypy_forward_skip_dirs() {
+        // Follow-up to the eslint skip_dirs wiring (see
+        // `skip_dirs_token_substituted_in_cmd_and_env` in main.rs, which proves
+        // the harness's {skip_dirs} substitution mechanism itself): the Python
+        // adapter's tree-walking linters must actually use that mechanism, or
+        // they lint/typecheck vendor and build-artifact dirs the honest-map
+        // walk does not treat as first-party code.
+        let tree = load_tree(&real_config_root()).expect("real config tree must load");
+        let python = tree
+            .adapters
+            .iter()
+            .find(|a| a.name == "python")
+            .expect("python adapter must exist");
+
+        let ruff = python
+            .checks
+            .iter()
+            .find(|c| c.name == "ruff")
+            .expect("ruff check must exist");
+        assert!(
+            ruff.cmd.contains("{skip_dirs}"),
+            "ruff must forward the Ops-owned skip_dirs: {:?}",
+            ruff.cmd
+        );
+        assert!(
+            ruff.cmd.contains("--extend-exclude"),
+            "ruff must use --extend-exclude, not --exclude (which REPLACES \
+             ruff's own default excludes instead of adding to them): {:?}",
+            ruff.cmd
+        );
+
+        let mypy = python
+            .checks
+            .iter()
+            .find(|c| c.name == "mypy")
+            .expect("mypy check must exist");
+        assert_eq!(
+            mypy.env.get("GATE_SKIP_DIRS").map(String::as_str),
+            Some("{skip_dirs}"),
+            "mypy must receive the Ops-owned skip_dirs via GATE_SKIP_DIRS: {:?}",
+            mypy.env
+        );
+        assert!(
+            mypy.cmd.contains("--exclude") && mypy.cmd.contains("$GATE_SKIP_DIRS"),
+            "mypy must forward an --exclude regex built from GATE_SKIP_DIRS: {:?}",
+            mypy.cmd
+        );
+    }
+
+    #[test]
+    fn golangci_lint_config_excludes_skip_dirs() {
+        // golangci-lint v2 has no CLI flag or config-file env-var expansion to
+        // receive the harness's {skip_dirs} token (verified against v2.12.2 —
+        // the v1 `issues.exclude-dirs`/`run.skip-dirs` keys were removed and
+        // never replaced with one), so `.golangci.yml` carries a hand-maintained
+        // mirror of detect.toml's skip_dirs instead (see ADR-039). This test
+        // guards that mirror doesn't silently drift: every skip_dirs name must
+        // appear under BOTH `linters.exclusions.paths` (golangci-lint run) and
+        // `formatters.exclusions.paths` (golangci-lint fmt), since they are
+        // separate config sections in v2 and each is read independently.
+        let detect_text = std::fs::read_to_string(real_config_root().join(DETECT))
+            .expect("detect.toml must exist");
+        let detect: DetectManifest = toml::from_str(&detect_text).expect("detect.toml must parse");
+
+        let golangci_text =
+            std::fs::read_to_string(real_config_root().join("languages/go/.golangci.yml"))
+                .expect(".golangci.yml must exist");
+        let (linters_part, formatters_part) = golangci_text
+            .split_once("\nformatters:")
+            .expect(".golangci.yml must have a top-level `formatters:` section");
+
+        for dir in &detect.skip_dirs {
+            // Directory names are regex-escaped in the yaml (a leading `.`
+            // becomes `\.`), so match on the bare name rather than the whole
+            // pattern string.
+            assert!(
+                linters_part.contains(dir.as_str()),
+                "skip_dirs entry {dir:?} missing from linters.exclusions.paths"
+            );
+            assert!(
+                formatters_part.contains(dir.as_str()),
+                "skip_dirs entry {dir:?} missing from formatters.exclusions.paths"
+            );
+        }
+    }
 }
