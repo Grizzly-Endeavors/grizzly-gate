@@ -23,14 +23,14 @@ The harness is itself gated by these exact rules — `harness/clippy.toml`-class
 
 ## How the image is built & released
 
-This repo holds the source; the **image is built in-cluster by grizzly-platform** (Argo Workflows + Kaniko), not by this repo's CI directly:
+This repo holds the source; the **image is built in-cluster by grizzly-platform** (Argo Workflows + rootless BuildKit), not by this repo's CI directly:
 
 - `.github/workflows/build-gate-image.yaml` (here) triggers on push to `main` and on `workflow_dispatch` — it submits the `build-gate-image` Argo `WorkflowTemplate` (which lives in grizzly-platform) and polls it.
 - That template clones this repo, builds from the repo root, and pushes `grizzly-gate:{latest, <version>, <uid>}` to the in-cluster zot registry.
 - **Cut a release:** `workflow_dispatch` with `version=vX.Y.Z`. Apps pin via `gate_version` on the reusable `gate.yaml` workflow.
 - Runs on the org's self-hosted `lab-runners` (ARC), which reach the in-cluster Argo server.
 
-**Dev-distribution image (Docker Hub).** Separately from the authoritative in-cluster build, a convenience image is published to `bearflinn/grizzly-gate:{latest,<sha>}` so local developers can pull and run the gate as a pre-check (`scripts/grizzly-gate-local.sh`, `docs/using-the-gate.md`). This image **signs nothing** — it's for local pre-checks only. It's published **multi-arch** (`linux/amd64` + `linux/arm64`) via `docker buildx` so it runs natively on Apple Silicon Macs; the amd64 leg stays byte-identical to the in-cluster Kaniko build (local pass == CI pass). Maintainers publish it with `scripts/publish-image.sh` (which builds both arches — the arm64 leg cross-builds via QEMU, so a plain-Docker publish host needs `docker run --privileged --rm tonistiigi/binfmt --install arm64` once); activate the automatic on-push publish per-machine with `ln -sf ../../scripts/hooks/pre-push .git/hooks/pre-push` (backgrounded, never blocks `git push`; skip one push with `GRIZZLY_GATE_NO_PUBLISH=1`). Requires `docker login` to the target repo.
+**Dev-distribution image (Docker Hub).** Separately from the authoritative in-cluster build, a convenience image is published to `bearflinn/grizzly-gate:{latest,<sha>}` so local developers can pull and run the gate as a pre-check (`scripts/grizzly-gate-local.sh`, `docs/using-the-gate.md`). This image **signs nothing** — it's for local pre-checks only. It's published **multi-arch** (`linux/amd64` + `linux/arm64`) via `docker buildx` so it runs natively on Apple Silicon Macs; the amd64 leg stays byte-identical to the in-cluster BuildKit build (local pass == CI pass). Maintainers publish it with `scripts/publish-image.sh` (which builds both arches — the arm64 leg cross-builds via QEMU, so a plain-Docker publish host needs `docker run --privileged --rm tonistiigi/binfmt --install arm64` once); activate the automatic on-push publish per-machine with `ln -sf ../../scripts/hooks/pre-push .git/hooks/pre-push` (backgrounded, never blocks `git push`; skip one push with `GRIZZLY_GATE_NO_PUBLISH=1`). Requires `docker login` to the target repo.
 
 ## Changing the rules
 

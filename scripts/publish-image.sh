@@ -4,13 +4,13 @@
 # concurrent runs with a lock, so two quick pushes won't build at once).
 #
 # This is the DEV-distribution image only — it signs nothing. The authoritative,
-# signed image is still built in-cluster (Argo + Kaniko) and pushed to zot.
+# signed image is built in-cluster (Argo + rootless BuildKit) and pushed to zot.
 #
 # MULTI-ARCH: builds linux/amd64 + linux/arm64 so the image runs natively on
 # Apple Silicon Macs (not just under emulation). buildx builds both legs and
 # pushes the manifest list atomically; a multi-arch image can't be loaded into
 # the local docker engine, so this builds straight to the registry (--push).
-# The amd64 leg is byte-identical to the in-cluster (Kaniko) build — local pass
+# The amd64 leg is byte-identical to the in-cluster (BuildKit) build — local pass
 # == CI pass. The arm64 leg is cross-built via QEMU on an amd64 host, so it's
 # slower; that's fine here (the pre-push hook backgrounds this, never blocking).
 #

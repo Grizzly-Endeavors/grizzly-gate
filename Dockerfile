@@ -38,14 +38,14 @@ RUN rustup component add clippy rustfmt
 # inspect debian:bookworm-slim`.
 FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
 
-# Target architecture, populated automatically by buildx (amd64|arm64). Declared
-# WITHOUT a default on purpose: a Dockerfile default would override buildx's
+# Target architecture, populated automatically by BuildKit/buildx (amd64|arm64).
+# Declared WITHOUT a default on purpose: a Dockerfile default would override the
 # auto-populated value and pin every leg to one arch. Each tool download below
-# maps this to that tool's own arch naming via an inline `case` whose `*)` branch
-# is the amd64 token — so a builder that doesn't set TARGETARCH at all (e.g.
-# Kaniko on the amd64 in-cluster build, where it's empty) still gets the exact
-# amd64 image. That `*)` fallback, not an ARG default, is the local-amd64 == CI
-# linchpin.
+# maps this to that tool's own arch naming via an inline `case` whose only
+# explicit branch is arm64) and whose `*)` branch is the amd64 token — so an
+# amd64 build (TARGETARCH=amd64, set identically by local buildx and the
+# in-cluster BuildKit) falls through to `*)` and gets the exact amd64 image.
+# That `*)` fallback, not an ARG default, is the local-amd64 == CI linchpin.
 ARG TARGETARCH
 
 # Pinned tool versions — bump deliberately, never float. (The Rust toolchain
@@ -191,7 +191,8 @@ RUN case "$TARGETARCH" in arm64) GO_ARCH=arm64 ;; *) GO_ARCH=amd64 ;; esac \
     # CGO_ENABLED=0: govulncheck is pure Go, and a cgo build invokes the C
     # compiler, which fails when this leg is cross-built under QEMU emulation
     # (gcc gets an `-m64` it doesn't recognize). Yields a static binary; the
-    # amd64 leg is unaffected in behavior (and Kaniko builds the same file).
+    # amd64 leg is unaffected in behavior (and the in-cluster BuildKit build,
+    # which is native amd64, produces the same file).
     && GOBIN=/usr/local/bin CGO_ENABLED=0 go install "golang.org/x/vuln/cmd/govulncheck@v${GOVULNCHECK_VERSION}"
 
 # Vendor a pinned Semgrep ruleset into the semgrep tool dir (offline, no registry

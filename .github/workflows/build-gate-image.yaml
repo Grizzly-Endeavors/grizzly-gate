@@ -3,7 +3,7 @@ name: Build CI Gate Image
 # Triggers an in-cluster Argo Workflows build of the grizzly-gate image.
 #
 # This whole repo IS the gate, so any push to main rebuilds it. The build runs
-# in-cluster via Kaniko (the `build-gate-image` WorkflowTemplate lives in the
+# in-cluster via rootless BuildKit (the `build-gate-image` WorkflowTemplate lives in the
 # platform repo, kubernetes/infrastructure/argo-workflows/), which clones THIS
 # repo at the pushed SHA and pushes the image to the in-cluster zot registry.
 #
