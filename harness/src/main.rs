@@ -1215,8 +1215,9 @@ mod tests {
         let written = std::fs::read_to_string(&resolved.arg).expect("wrapper file must exist");
         let wrapper: serde_json::Value =
             serde_json::from_str(&written).expect("wrapper must be valid JSON");
-        let exclude: Vec<String> = wrapper["exclude"]
-            .as_array()
+        let exclude: Vec<String> = wrapper
+            .get("exclude")
+            .and_then(|v| v.as_array())
             .expect("wrapper must set `exclude`")
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
