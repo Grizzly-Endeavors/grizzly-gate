@@ -348,7 +348,7 @@ mod tests {
     /// The real, Ops-owned config tree this repo ships (`config/`, a sibling of
     /// the `harness/` crate) — as opposed to the synthetic scratch trees the
     /// other tests build. Used to assert facts about the *actual* manifests
-    /// (skip_dirs wiring), not just the loader mechanics.
+    /// (`skip_dirs` wiring), not just the loader mechanics.
     fn real_config_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config")
     }

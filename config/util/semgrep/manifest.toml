@@ -18,5 +18,18 @@ scope = "source"
 # on framework-internal codegen (e.g. dynamic dispatch in generated router glue),
 # even on a byte-for-byte clean CI checkout. Scoped narrowly on purpose; this is
 # not the same list as `skip_dirs`.
-cmd = "semgrep scan --json --error --quiet --exclude=dist --exclude=build --exclude=.svelte-kit --config {config}/rules {source}"
+#
+# --exclude-rule string-concat-in-list: this rule flags implicit adjacent-literal
+# string concatenation inside a list/call, because that shape is also the
+# signature of a missing comma between two list elements. But semgrep cannot tell
+# an intentional multi-line string from a lost comma, and implicit concatenation
+# is exactly the form ruff prefers (FLY002) and permits (ISC001 deferred to the
+# formatter, ISC002 dormant since allow-multiline defaults true). The two tools
+# left NO shape for a static multi-line string (e.g. long SQL text) that satisfies
+# both — implicit trips semgrep, `+` trips ruff ISC003 (and can trip semgrep's
+# avoid-sqlalchemy-text), an f-string trips ruff F541. Excluding this one rule
+# makes implicit concatenation the single clean canonical form. The rule id is the
+# vendored rules' path-derived id (rules live at the fixed install path below).
+# See ADR-040.
+cmd = "semgrep scan --json --error --quiet --exclude=dist --exclude=build --exclude=.svelte-kit --exclude-rule=etc.grizzly-gate.config.util.semgrep.rules.python.lang.correctness.common-mistakes.string-concat-in-list --config {config}/rules {source}"
 output = { parser = "semgrep" }

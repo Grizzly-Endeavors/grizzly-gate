@@ -134,9 +134,34 @@ const reactBlock = {
 };
 
 // Layer 5 — Svelte. The plugin's recommended flat config wires svelte-eslint-parser
-// and the component-correctness rules; the override points the script-block parser
-// at typescript-eslint so `<script lang="ts">` parses, and applies the security
-// core. Type strictness for components is the svelte-check step's job.
+// and the component-correctness rules. Two overrides follow it (see ADR-041):
+//
+//   (a) `*.svelte` COMPONENTS — point the script-block sub-parser at typescript-
+//       eslint so `<script lang="ts">` parses, apply the security core, and tune
+//       two rules the recommended set gets wrong for Svelte 5:
+//         - `prefer-const` off, `svelte/prefer-const` on: bindable props
+//           (`let { open = $bindable(false), filters } = $props()`) force the
+//           whole destructure to `let`; core `prefer-const` can't see the
+//           framework-driven `$bindable` reassignment and would (wrongly) demand
+//           `const` on the sibling fields. `{ destructuring: "all" }` doesn't help
+//           either — ESLint sees NONE of them reassigned, so it still wants const
+//           on all. The rune-aware rule understands `$props`/`$bindable`.
+//         - `svelte/no-navigation-without-resolve` off: `resolve()` is for the
+//           app's own internal route manifest; the rule wrongly fires on plain
+//           external `<a href>` links, which have no code-level fix.
+//
+//   (b) `*.svelte.{js,ts}` RUNE MODULES (`$state`/`$derived`/… in a plain module)
+//       — these carry NO template syntax and are 100% ordinary JS/TS. The
+//       recommended set's `setup-for-svelte-script` block routes them to
+//       svelte-eslint-parser, which (with no TS sub-parser) errors "Unexpected
+//       token interface" on TypeScript, and even WITH a sub-parser mishandles
+//       type-only references (false `no-unused-vars` on a type used only in
+//       annotations). So route them straight to the typescript-eslint parser
+//       instead: correct parsing + no false positives, and they still pick up the
+//       type-aware `strictTypeChecked` rules and the security core from the TS
+//       block above (they match `**/*.ts`). Core `prefer-const` is correct here
+//       (a module's `$state` is reassigned in source; `$derived` is `const`), so
+//       no rune-aware swap is needed — that problem is component-only.
 const svelteBlock = [
   ...svelte.configs.recommended,
   {
@@ -144,7 +169,16 @@ const svelteBlock = [
     languageOptions: {
       parserOptions: { parser: tseslint.parser },
     },
-    rules: { ...securityDisciplineRules },
+    rules: {
+      ...securityDisciplineRules,
+      "prefer-const": "off",
+      "svelte/prefer-const": "error",
+      "svelte/no-navigation-without-resolve": "off",
+    },
+  },
+  {
+    files: ["**/*.svelte.{js,ts}"],
+    languageOptions: { parser: tseslint.parser },
   },
 ];
 
