@@ -108,7 +108,7 @@ The image is published to Docker Hub as **`bearflinn/grizzly-gate:latest`** — 
 **Run it directly** from the root of the repo you want to check:
 
 ```sh
-docker run --rm -v "$PWD:/src" -w /src bearflinn/grizzly-gate:latest --source /src
+docker run --rm -v "$PWD:/src" -v grizzly-gate-cache:/cache -w /src bearflinn/grizzly-gate:latest --source /src
 ```
 
 Or use the wrapper, which does the same and forwards extra args:
@@ -118,6 +118,10 @@ Or use the wrapper, which does the same and forwards extra args:
 ```
 
 Either way the gate runs with no `--sign`/`--image`, writes `grizzly-gate-report/report.json`, and exits non-zero on failure, so it composes into your own pre-commit or CI.
+
+**The gate leaves your working tree as it found it.** The checks need real dependencies installed and real build output on disk, but none of it is left in your repo: cargo's `target/`, the npm cache, and uv's package cache go to the `grizzly-gate-cache` volume, and the Python virtualenv plus every per-tool cache (ruff, mypy, pytest) goes to a scratch dir inside the container that is deleted when the run ends. The two things that *must* be written into the tree — the `node_modules` `npm ci` installs, and the `*.egg-info` an editable install writes — are removed afterwards, and a `node_modules` you already had is parked aside first and moved back, so a gate run never costs you a reinstall. The one artifact a run leaves behind is `grizzly-gate-report/report.json`, owned by whoever owns the checkout rather than by the container's root. See [ADR-042](decisions/042-leave-the-scanned-tree-clean.md).
+
+The cache volume is a convenience, not a requirement — it just keeps repeat runs from recompiling and re-downloading everything. Omit it and runs still work, only cold; reclaim the space any time with `docker volume rm grizzly-gate-cache`.
 
 > **Mac/arm64 parity note.** CI builds and runs the amd64 image, so on Apple Silicon the arm64 variant is what you get by default. Every text-level check (lint, format, SAST, secrets, dependency scan) is deterministic across architectures — same pinned tool versions, same verdict. The only place a result can differ is code with architecture-conditional compilation (Rust `#[cfg(target_arch = …)]`, Go `//go:build amd64`), which the compiling checks (clippy, `go vet`/`govulncheck`) evaluate for the host arch. If your repo has arch-gated code and you want byte-exact CI reproduction on a Mac, force the amd64 variant: `DOCKER_DEFAULT_PLATFORM=linux/amd64` (or `docker run --platform linux/amd64 …`) — it runs emulated, exactly as CI does.
 

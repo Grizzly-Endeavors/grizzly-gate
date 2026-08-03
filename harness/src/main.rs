@@ -18,7 +18,7 @@ use clap::{Parser, Subcommand};
 use config::Scope;
 use gateconfig::ResolvedProject;
 use report::Report;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -412,6 +412,303 @@ struct Subst<'a> {
     /// not treat as first-party code (e.g. eslint, which otherwise lints
     /// build/dist/.svelte-kit). Single-sourced from `detect.toml`.
     skip_dirs: Option<&'a str>,
+    /// Scratch dir private to this project inside the container ([`WorkRoot`]).
+    /// A check substitutes `{work}` for state it needs on disk but the scanned
+    /// repo must not be left holding — the Python adapter's virtualenv, per-tool
+    /// caches. Absent for scanners, which write nothing into the tree.
+    work: Option<&'a str>,
+}
+
+/// Directory the image reserves for [`WorkRoot`], created mode 0700 and owned by
+/// root (`Dockerfile`). Deliberately *not* the system temp dir: the gate runs as
+/// root, and a predictably-named dir under a world-writable `/tmp` lets any
+/// local user pre-plant a symlink there and redirect what the gate writes
+/// through it. A private directory the image owns removes that whole class
+/// rather than racing it. Override with `GRIZZLY_GATE_WORK_DIR` to run the
+/// harness outside its container.
+const DEFAULT_WORK_DIR: &str = "/gate-work";
+
+/// Container-private scratch space for one gate run.
+///
+/// The gate mounts the scanned working tree read-write, so anything a check
+/// leaves beside the source outlives the run — in the caller's repo, owned by
+/// the container's root. Everything that does not *have* to live in the tree is
+/// pointed here instead, via the `{work}` token a check substitutes into its
+/// command line, and the whole thing is deleted when the run ends. See ADR-042.
+struct WorkRoot {
+    path: PathBuf,
+}
+
+impl WorkRoot {
+    fn new() -> Result<Self> {
+        let base = std::env::var_os("GRIZZLY_GATE_WORK_DIR")
+            .map_or_else(|| PathBuf::from(DEFAULT_WORK_DIR), PathBuf::from);
+        let path = base.join(std::process::id().to_string());
+        // The MCP server serves many runs from one process, so this path repeats
+        // across them; start each from a known-empty dir rather than inheriting
+        // the last run's state.
+        remove_path(&path)
+            .with_context(|| format!("clearing stale work dir {}", path.display()))?;
+        std::fs::create_dir_all(&path).with_context(|| {
+            format!(
+                "creating work dir {} (set GRIZZLY_GATE_WORK_DIR to relocate it \
+                 when running the harness outside the gate container)",
+                path.display()
+            )
+        })?;
+        Ok(Self { path })
+    }
+
+    /// Scratch dir private to one declared project, so two projects of the same
+    /// language never share a virtualenv or a cache.
+    fn project_dir(&self, language: &str, idx: usize) -> Result<PathBuf> {
+        let path = self.path.join(format!("{language}-{idx}"));
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("creating project work dir {}", path.display()))?;
+        Ok(path)
+    }
+}
+
+impl Drop for WorkRoot {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
+            eprintln!(
+                "grizzly-gate :: warning: could not remove work dir {}: {e}",
+                self.path.display()
+            );
+        }
+    }
+}
+
+/// Remove `path` whatever it is — directory, symlink, or file. Already absent is
+/// success, so this is idempotent.
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    match path.symlink_metadata() {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// The dependency dir `npm ci` installs into, and the name a pre-existing one is
+/// parked under while the gate runs.
+const NODE_MODULES: &str = "node_modules";
+const NODE_MODULES_STASH: &str = ".grizzly-gate.node_modules";
+
+/// Keeps a node project's installed dependencies out of the scanned repo's
+/// steady state.
+///
+/// Unlike the Python virtualenv, `node_modules` cannot be relocated to
+/// [`WorkRoot`]: node resolves it beside `package.json`, `npm ci` deletes and
+/// recreates it in the project dir (verified — it replaces even a symlink
+/// pointing elsewhere with a real directory), and a repo's own `prepare` script
+/// legitimately generates files there that its tsconfig extends, e.g. `SvelteKit`'s
+/// `svelte-kit sync`. So the install happens in the tree and is undone
+/// afterwards. Whatever was already installed is renamed aside first — a rename
+/// within one directory, so it is atomic and costs nothing however large the dir
+/// is — and moved back by [`Self::restore`]. See ADR-042.
+struct NodeModulesStash {
+    live: PathBuf,
+    /// Where the repo's own `node_modules` is parked, when it had one.
+    stashed: Option<PathBuf>,
+}
+
+impl NodeModulesStash {
+    fn park(project_dir: &Path) -> Result<Self> {
+        let live = project_dir.join(NODE_MODULES);
+        let stash = project_dir.join(NODE_MODULES_STASH);
+        if live.symlink_metadata().is_err() {
+            return Ok(Self {
+                live,
+                stashed: None,
+            });
+        }
+        if stash.symlink_metadata().is_ok() {
+            // A stash a previous run was killed before it could restore. It, not
+            // what is live, holds the repo's own dependencies — keep it and drop
+            // the gate-installed leftovers, which self-heals that interruption.
+            remove_path(&live)
+                .with_context(|| format!("removing stale gate install {}", live.display()))?;
+        } else {
+            std::fs::rename(&live, &stash).with_context(|| {
+                format!("parking {} aside as {}", live.display(), stash.display())
+            })?;
+        }
+        Ok(Self {
+            live,
+            stashed: Some(stash),
+        })
+    }
+
+    fn restore(self) {
+        // Best-effort on both steps: a failure here costs the caller a dirty
+        // tree, never a wrong verdict, so it is surfaced rather than raised.
+        if let Err(e) = remove_path(&self.live) {
+            eprintln!(
+                "grizzly-gate :: warning: could not remove gate-installed {}: {e}",
+                self.live.display()
+            );
+            // Leave the stash parked rather than rename over what is still there.
+            return;
+        }
+        if let Some(stash) = self.stashed {
+            if let Err(e) = std::fs::rename(&stash, &self.live) {
+                eprintln!(
+                    "grizzly-gate :: warning: could not restore {} from {}: {e}",
+                    self.live.display(),
+                    stash.display()
+                );
+            }
+        }
+    }
+}
+
+/// The `*.egg-info` directories a python project had before its adapter ran.
+///
+/// The deps check editable-installs the repo's own package so its first-party
+/// imports resolve (ADR-032), and an editable install writes an `*.egg-info`
+/// beside the package it describes — inside the tree, where no `{work}`
+/// redirection reaches. Anything by that name that was not there beforehand is
+/// therefore the gate's and is removed; anything that was is the repo's and is
+/// left alone.
+struct EggInfo {
+    root: PathBuf,
+    skip_dirs: Vec<String>,
+    before: BTreeSet<PathBuf>,
+}
+
+impl EggInfo {
+    fn snapshot(root: &Path, skip_dirs: &[String]) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            skip_dirs: skip_dirs.to_vec(),
+            before: egg_info_dirs(root, skip_dirs),
+        }
+    }
+
+    fn remove_generated(self) {
+        for path in egg_info_dirs(&self.root, &self.skip_dirs) {
+            if self.before.contains(&path) {
+                continue;
+            }
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                eprintln!(
+                    "grizzly-gate :: warning: could not remove generated {}: {e}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+/// Every `*.egg-info` directory under `root`, skipping the Ops-owned `skip_dirs`
+/// and `.git` — the same boundary the honest-map walk uses. An unreadable entry
+/// is skipped: worst case the gate leaves one generated dir behind, which is a
+/// dirty tree, never a wrong verdict.
+fn egg_info_dirs(root: &Path, skip_dirs: &[String]) -> BTreeSet<PathBuf> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.depth() == 0 || !e.file_type().is_dir() {
+                return true;
+            }
+            let name = e.file_name().to_string_lossy();
+            name != ".git" && !skip_dirs.iter().any(|d| *d == name)
+        })
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_type().is_dir() && e.file_name().to_string_lossy().ends_with(".egg-info")
+        })
+        .map(walkdir::DirEntry::into_path)
+        .collect()
+}
+
+/// Run one declared project's adapter checks, in that project's own directory.
+///
+/// Brackets the checks with the guards that keep the scanned repo clean: state
+/// that can live outside it is addressed through `work_dir` (the `{work}` token),
+/// and the two things that cannot — `npm ci`'s `node_modules` and an editable
+/// install's `*.egg-info` — are undone here once the checks finish. See ADR-042.
+fn run_adapter(
+    log: &mut dyn Write,
+    tree: &config::Tree,
+    adapter: &config::LanguageAdapter,
+    project: &ResolvedProject,
+    work_dir: &Path,
+    skip_dirs: &str,
+) -> Result<Vec<StepResult>> {
+    let mut results: Vec<StepResult> = Vec::new();
+    let cfg = adapter.config_dir.to_string_lossy().to_string();
+    let proj_str = project.abs_path.to_string_lossy().to_string();
+    let work_str = work_dir.to_string_lossy().to_string();
+    let where_ = if project.rel_path.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        project.rel_path.display().to_string()
+    };
+    writeln!(
+        log,
+        "\n=== {} @ {where_} (marker: {}) ===",
+        adapter.name, adapter.marker
+    )?;
+
+    let node_modules = (adapter.name == "node")
+        .then(|| NodeModulesStash::park(&project.abs_path))
+        .transpose()?;
+    let egg_info = (adapter.name == "python")
+        .then(|| EggInfo::snapshot(&project.abs_path, &tree.detect.skip_dirs));
+
+    // For node, resolve the tsconfig the checks use. A repo-declared tsconfig
+    // is wrapped so its module/path resolution is honored while the gate's
+    // strictness is force-overridden; the wrapper is cleaned up after.
+    //
+    // Resolution is deferred until the first check that substitutes
+    // `{tsconfig}`: it shells out to `tsc --showConfig`, which must run
+    // AFTER the adapter's deps check (`npm ci`) because a repo's tsconfig
+    // may extend a generated config that only exists post-install — e.g.
+    // `SvelteKit`'s `.svelte-kit/tsconfig.json`, produced by the package's
+    // `prepare` script (`svelte-kit sync`).
+    let mut ts: Option<ResolvedTsconfig> = None;
+    let mut ts_resolved = false;
+    for check in &adapter.checks {
+        let needs_ts = check.cmd.contains("{tsconfig}")
+            || check.env.values().any(|v| v.contains("{tsconfig}"));
+        if needs_ts && !ts_resolved {
+            ts = resolve_tsconfig(adapter, project, &tree.detect.skip_dirs)?;
+            ts_resolved = true;
+        }
+        let subst = Subst {
+            source: Some(&proj_str),
+            image: None,
+            config: Some(&cfg),
+            tsconfig: ts.as_ref().map(|t| t.arg.as_str()),
+            skip_dirs: Some(skip_dirs),
+            work: Some(&work_str),
+        };
+        let mut result = run(
+            log,
+            &format!("{}:{}", adapter.name, check.name),
+            &check.cmd,
+            &project.abs_path,
+            subst,
+            &check.env,
+            &check.output,
+        )?;
+        result.language = Some(adapter.name.clone());
+        result.project = Some(where_.clone());
+        results.push(result);
+    }
+    if let Some(t) = ts {
+        t.cleanup();
+    }
+    if let Some(nm) = node_modules {
+        nm.restore();
+    }
+    if let Some(e) = egg_info {
+        e.remove_generated();
+    }
+    Ok(results)
 }
 
 /// Run each declared project's adapter checks (in its own directory) and every
@@ -439,69 +736,21 @@ fn run_checks(
     // before any node check runs; the guard removes it afterwards.
     let eslint_config = materialize_eslint_config(tree, projects)?;
 
+    // Scratch space for state the checks need on disk but the scanned repo must
+    // not be left holding. Deleted when this function returns, on every path.
+    let work = WorkRoot::new()?;
+
     // --- Language adapters, per declared project ---------------------------
-    for project in projects {
+    for (idx, project) in projects.iter().enumerate() {
         let adapter = tree
             .adapters
             .iter()
             .find(|a| a.name == project.language)
             .with_context(|| format!("no adapter for declared language {:?}", project.language))?;
-
-        let cfg = adapter.config_dir.to_string_lossy().to_string();
-        let proj_str = project.abs_path.to_string_lossy().to_string();
-        let where_ = if project.rel_path.as_os_str().is_empty() {
-            ".".to_string()
-        } else {
-            project.rel_path.display().to_string()
-        };
-        writeln!(
-            log,
-            "\n=== {} @ {where_} (marker: {}) ===",
-            adapter.name, adapter.marker
-        )?;
-
-        // For node, resolve the tsconfig the checks use. A repo-declared tsconfig
-        // is wrapped so its module/path resolution is honored while the gate's
-        // strictness is force-overridden; the wrapper is cleaned up after.
-        //
-        // Resolution is deferred until the first check that substitutes
-        // `{tsconfig}`: it shells out to `tsc --showConfig`, which must run
-        // AFTER the adapter's deps check (`npm ci`) because a repo's tsconfig
-        // may extend a generated config that only exists post-install — e.g.
-        // SvelteKit's `.svelte-kit/tsconfig.json`, produced by the package's
-        // `prepare` script (`svelte-kit sync`).
-        let mut ts: Option<ResolvedTsconfig> = None;
-        let mut ts_resolved = false;
-        for check in &adapter.checks {
-            let needs_ts = check.cmd.contains("{tsconfig}")
-                || check.env.values().any(|v| v.contains("{tsconfig}"));
-            if needs_ts && !ts_resolved {
-                ts = resolve_tsconfig(adapter, project, &tree.detect.skip_dirs)?;
-                ts_resolved = true;
-            }
-            let subst = Subst {
-                source: Some(&proj_str),
-                image: None,
-                config: Some(&cfg),
-                tsconfig: ts.as_ref().map(|t| t.arg.as_str()),
-                skip_dirs: Some(&skip_dirs),
-            };
-            let mut result = run(
-                log,
-                &format!("{}:{}", adapter.name, check.name),
-                &check.cmd,
-                &project.abs_path,
-                subst,
-                &check.env,
-                &check.output,
-            )?;
-            result.language = Some(adapter.name.clone());
-            result.project = Some(where_.clone());
-            results.push(result);
-        }
-        if let Some(t) = ts {
-            t.cleanup();
-        }
+        let work_dir = work.project_dir(&adapter.name, idx)?;
+        results.extend(run_adapter(
+            log, tree, adapter, project, &work_dir, &skip_dirs,
+        )?);
     }
 
     // Node checks are done; drop the materialized eslint config. Scanners walk
@@ -526,6 +775,9 @@ fn run_checks(
             config: Some(&cfg),
             tsconfig: None,
             skip_dirs: Some(&skip_dirs),
+            // Scanners read the tree and write their reports to their own temp
+            // files; none of them needs scratch space in the repo.
+            work: None,
         };
         let label = format!("scan:{}", scanner.name);
         match scanner.scope {
@@ -974,6 +1226,9 @@ fn run(
         if let Some(v) = subst.skip_dirs {
             r = r.replace("{skip_dirs}", v);
         }
+        if let Some(v) = subst.work {
+            r = r.replace("{work}", v);
+        }
         r
     };
 
@@ -1091,6 +1346,7 @@ mod tests {
         config: None,
         tsconfig: None,
         skip_dirs: None,
+        work: None,
     };
 
     #[test]
@@ -1126,6 +1382,7 @@ mod tests {
             config: None,
             tsconfig: None,
             skip_dirs: Some("dist,build,.svelte-kit"),
+            work: None,
         };
         let mut env = BTreeMap::new();
         env.insert("SD".to_string(), "{skip_dirs}".to_string());
@@ -1150,6 +1407,176 @@ mod tests {
             "the {{skip_dirs}} token is replaced in env values: {:?}",
             r.output
         );
+    }
+
+    #[test]
+    fn work_token_substituted_in_cmd_and_env() {
+        // The {work} token points a check at scratch space inside the container
+        // instead of the scanned repo (the Python venv, ruff/mypy caches). Like
+        // {skip_dirs} it must reach both the command line and env values.
+        let subst = Subst {
+            source: None,
+            image: None,
+            config: None,
+            tsconfig: None,
+            skip_dirs: None,
+            work: Some("/tmp/gate-work/python-0"),
+        };
+        let mut env = BTreeMap::new();
+        env.insert("W".to_string(), "{work}/venv".to_string());
+        let r = run(
+            &mut std::io::sink(),
+            "t:work",
+            "sh -c 'echo cmd={work}; echo env=$W'",
+            Path::new("."),
+            subst,
+            &env,
+            &config::OutputSpec::default(),
+        )
+        .expect("logging to a sink cannot fail");
+        assert!(
+            r.output.contains("cmd=/tmp/gate-work/python-0"),
+            "the {{work}} token is replaced in the command: {:?}",
+            r.output
+        );
+        assert!(
+            r.output.contains("env=/tmp/gate-work/python-0/venv"),
+            "the {{work}} token is replaced in env values: {:?}",
+            r.output
+        );
+    }
+
+    /// Stand in for `npm ci`: blow away whatever `node_modules` is there and
+    /// install something else, which is what makes the stash necessary.
+    fn fake_npm_ci(project: &Path, marker: &str) {
+        let dir = project.join(NODE_MODULES);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("creating the gate's node_modules");
+        std::fs::write(dir.join("installed-by"), marker).expect("writing the install marker");
+    }
+
+    #[test]
+    fn node_modules_stash_restores_the_repos_own_install() {
+        // The gate mounts the working tree read-write and `npm ci` deletes and
+        // reinstalls node_modules in place, so without the stash a gate run
+        // costs the developer their installed dependencies (ADR-042). Park,
+        // install over it, restore — the repo's own copy must come back and no
+        // gate state may remain.
+        let root = scratch("nm-restore");
+        std::fs::remove_dir_all(&root).ok();
+        let project = root.join("web");
+        std::fs::create_dir_all(project.join(NODE_MODULES)).expect("creating the repo's deps");
+        std::fs::write(
+            project.join(NODE_MODULES).join("installed-by"),
+            "the developer",
+        )
+        .expect("writing the repo's marker");
+
+        let stash = NodeModulesStash::park(&project).expect("parking the repo's node_modules");
+        assert!(
+            !project.join(NODE_MODULES).exists(),
+            "parking clears the way for a fresh install"
+        );
+        fake_npm_ci(&project, "the gate");
+        stash.restore();
+
+        assert_eq!(
+            std::fs::read_to_string(project.join(NODE_MODULES).join("installed-by"))
+                .expect("the repo's node_modules is back"),
+            "the developer",
+            "restore returns the developer's install, not the gate's"
+        );
+        assert!(
+            !project.join(NODE_MODULES_STASH).exists(),
+            "no stash is left behind in the scanned tree"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn node_modules_stash_is_removed_when_the_repo_had_none() {
+        // The common case: nothing installed beforehand, so the gate's own
+        // install is the only thing there and must be gone afterwards.
+        let root = scratch("nm-none");
+        std::fs::remove_dir_all(&root).ok();
+        let project = root.join("web");
+        std::fs::create_dir_all(&project).expect("creating the project dir");
+
+        let stash = NodeModulesStash::park(&project).expect("parking with nothing to park");
+        fake_npm_ci(&project, "the gate");
+        stash.restore();
+
+        assert!(
+            !project.join(NODE_MODULES).exists(),
+            "the gate's install does not outlive the run"
+        );
+        assert!(
+            !project.join(NODE_MODULES_STASH).exists(),
+            "and neither does a stash"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn node_modules_stash_recovers_from_an_interrupted_run() {
+        // A run killed between park and restore leaves the stash on disk with
+        // the repo's real dependencies in it, and the gate's install live. The
+        // next run must keep the stash (the better copy) and discard the
+        // leftovers, rather than parking the gate's install over the top.
+        let root = scratch("nm-interrupted");
+        std::fs::remove_dir_all(&root).ok();
+        let project = root.join("web");
+        std::fs::create_dir_all(project.join(NODE_MODULES_STASH)).expect("creating a stale stash");
+        std::fs::write(
+            project.join(NODE_MODULES_STASH).join("installed-by"),
+            "the developer",
+        )
+        .expect("writing the repo's marker");
+        fake_npm_ci(&project, "a killed gate run");
+
+        let stash = NodeModulesStash::park(&project).expect("parking with a stale stash present");
+        fake_npm_ci(&project, "the gate");
+        stash.restore();
+
+        assert_eq!(
+            std::fs::read_to_string(project.join(NODE_MODULES).join("installed-by"))
+                .expect("the repo's node_modules is back"),
+            "the developer",
+            "the stale stash is the developer's copy and is what gets restored"
+        );
+        assert!(
+            !project.join(NODE_MODULES_STASH).exists(),
+            "the interruption is healed, not carried forward"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn egg_info_removes_only_what_the_run_generated() {
+        // `uv pip install -e .` writes an *.egg-info beside the package it
+        // describes — inside the tree, where {work} cannot reach (ADR-042).
+        // Snapshot-and-diff so a repo that checks one in keeps it.
+        let root = scratch("egg-info");
+        std::fs::remove_dir_all(&root).ok();
+        let src = root.join("src");
+        let committed = src.join("committed.egg-info");
+        std::fs::create_dir_all(&committed).expect("creating the repo's own egg-info");
+
+        let skip_dirs = vec!["node_modules".to_string()];
+        let egg = EggInfo::snapshot(&root, &skip_dirs);
+        let generated = src.join("generated.egg-info");
+        std::fs::create_dir_all(&generated).expect("creating the install's egg-info");
+        egg.remove_generated();
+
+        assert!(
+            committed.exists(),
+            "an egg-info that predates the run is the repo's and is left alone"
+        );
+        assert!(
+            !generated.exists(),
+            "one that appeared during the run is the gate's and is removed"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     fn scratch(tag: &str) -> PathBuf {
@@ -1320,6 +1747,12 @@ mod tests {
             abs_path: project_dir,
             tsconfig: Some(repo_ts),
         }];
+
+        // `run_checks` builds a `WorkRoot` under DEFAULT_WORK_DIR, which only the
+        // gate container has. Point it at this test's own scratch dir instead.
+        // No other test reads this variable, so setting it process-wide is safe
+        // under the parallel test runner.
+        std::env::set_var("GRIZZLY_GATE_WORK_DIR", root.join("work"));
 
         let mut log = Vec::new();
         let results = run_checks(&mut log, &tree, &root, None, &projects)

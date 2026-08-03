@@ -24,6 +24,56 @@ pub const SCHEMA: u32 = 2;
 /// Report filename written inside the report dir.
 pub const FILE: &str = "report.json";
 
+/// Hand freshly-written artifacts to whoever owns the directory they landed in.
+///
+/// The gate runs as root inside its container against a bind-mounted working
+/// tree, so the report — the one thing a run is *meant* to leave behind — would
+/// otherwise land root-owned in the caller's repo, unreadable and undeletable by
+/// the user who asked for it. `dir`'s parent is the reference owner because `dir`
+/// itself may have just been created here. See ADR-042.
+///
+/// Best-effort by design: a report that exists but is misowned still beats
+/// failing the run over it. Paths already owned correctly are skipped, which
+/// makes this a silent no-op outside the container — where the writer is the
+/// owner already and the `chown` would fail for want of privilege anyway.
+fn adopt_dir_owner(dir: &Path, paths: &[&Path]) {
+    use std::os::unix::fs::MetadataExt;
+
+    let reference = match dir.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        // A bare relative report dir ("grizzly-gate-report") parents to "";
+        // either way the enclosing dir is the working directory.
+        _ => Path::new("."),
+    };
+    let Ok(meta) = std::fs::metadata(reference) else {
+        return;
+    };
+    let (uid, gid) = (meta.uid(), meta.gid());
+    if uid == 0 {
+        // Nobody to hand it back to — CI, where the checkout is root's anyway.
+        return;
+    }
+    for path in paths {
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.uid() == uid && m.gid() == gid => continue,
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!(
+                    "grizzly-gate :: warning: could not stat {}: {e}",
+                    path.display()
+                );
+                continue;
+            }
+        }
+        if let Err(e) = std::os::unix::fs::chown(path, Some(uid), Some(gid)) {
+            eprintln!(
+                "grizzly-gate :: warning: could not give {} to uid {uid}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
 /// One gate run, serialized to `report.json`.
 #[derive(Serialize, Deserialize)]
 pub struct Report {
@@ -226,6 +276,7 @@ impl Report {
         let json = serde_json::to_string_pretty(self).context("serializing report")?;
         std::fs::write(&path, json)
             .with_context(|| format!("writing report {}", path.display()))?;
+        adopt_dir_owner(dir, &[dir, &path]);
         Ok(path)
     }
 

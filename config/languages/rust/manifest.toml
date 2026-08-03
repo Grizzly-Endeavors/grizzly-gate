@@ -15,6 +15,8 @@ cmd = "cargo fmt --all --check -- --config-path {config}/rustfmt.toml"
 
 [[checks]]
 name = "clippy"
+# Build output goes to CARGO_TARGET_DIR (set in the Dockerfile), not a `target/`
+# in the scanned repo — the gate leaves the working tree as it found it (ADR-042).
 # Lint LEVELS are passed here (not in clippy.toml, which can't set levels) so they
 # override a repo's Cargo.toml [lints] — rustc applies command-line flags last.
 # Folded from residuum's house lints, "safety core": shortcuts, panics, debug/
