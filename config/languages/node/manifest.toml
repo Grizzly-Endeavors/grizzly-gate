@@ -37,6 +37,13 @@ shebangs = ["node"]
 
 [[checks]]
 name = "deps"
+# `node_modules` is the one piece of adapter state that cannot be relocated out
+# of the scanned repo: node resolves it beside `package.json`, `npm ci` deletes
+# and recreates it in the project dir, and a repo's own `prepare` script may
+# generate files there its tsconfig extends (`svelte-kit sync`). So it is
+# installed here and undone afterwards — the harness parks any pre-existing
+# `node_modules` aside first and moves it back when the adapter's checks finish,
+# leaving the tree as it found it (`NodeModulesStash`, ADR-042).
 cmd = "npm ci"
 
 [[checks]]

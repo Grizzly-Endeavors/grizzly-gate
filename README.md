@@ -116,8 +116,10 @@ That's the whole integration. The gate owns the checks; the app repo owns build 
 You don't need the signing key, a registry, or an admission controller to get most of the value: the strict, fail-closed pass/fail over your source *is* the gate. The same image runs against any working tree and exits non-zero on the first failure, so it drops into a plain CI job, a `pre-commit` hook, or a one-off local check before you push:
 
 ```sh
-docker run --rm -v "$PWD:/src" -w /src bearflinn/grizzly-gate:latest --source /src
+docker run --rm -v "$PWD:/src" -v grizzly-gate-cache:/cache -w /src bearflinn/grizzly-gate:latest --source /src
 ```
+
+It leaves your working tree as it found it: build output and package caches go to the `grizzly-gate-cache` volume, per-project state to a scratch dir inside the container, and the few things that must be written into the repo are undone before the run returns ([ADR-042](docs/decisions/042-leave-the-scanned-tree-clean.md)). The one artifact left behind is `grizzly-gate-report/report.json`.
 
 A standalone run does everything CI does **except** cosign signing and image-layer (CVE/SBOM) scanning — those need a built image and signing material. The honest-map check and every per-language + SAST/secret/dependency check run identically, because it's the same image. The dev-distribution image at `bearflinn/grizzly-gate:latest` is published for exactly this (it signs nothing) and is multi-arch (`linux/amd64` + `linux/arm64`), so it runs natively on Apple Silicon and Intel Macs. See [Using the gate](docs/using-the-gate.md) for local setup, the pre-commit wiring, the full `gate-config.json` reference, the violation→fix table, and the machine-readable failure report.
 

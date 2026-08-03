@@ -260,4 +260,34 @@ COPY --from=harness /usr/local/bin/grizzly-gate /usr/local/bin/grizzly-gate
 
 # Default config root so callers can just `grizzly-gate --source ... --image ...`.
 ENV GRIZZLY_GATE_CONFIG_DIR=/etc/grizzly-gate/config
+
+# Keep every tool's build output and package cache off the scanned tree (ADR-042).
+# The gate mounts the working tree read-write, so a cargo `target/` or an npm
+# cache written beside the source outlives the run in the caller's checkout —
+# root-owned, since the gate runs as root. These point at /cache instead, which
+# the local wrapper backs with a named docker volume so repeat runs stay warm; an
+# invocation that mounts nothing there just gets the container's own layer and
+# loses the results with it. Set last so the build stages above (which compile the
+# harness and install the node toolchain) are unaffected.
+#
+# Per-project state that varies with the scanned repo — the Python virtualenv,
+# ruff/mypy caches — is NOT here: those go to the run's `{work}` dir, so two
+# repos can never share one (see config/languages/python/manifest.toml). Only
+# content-addressed caches, which are safe to share, live at /cache.
+#
+# PYTHONDONTWRITEBYTECODE stops `__pycache__` dirs appearing throughout the
+# scanned source; the gate compiles each file once per run, so there is nothing
+# for a bytecode cache to save.
+#
+# /gate-work is the harness's per-run scratch root (`DEFAULT_WORK_DIR`). It is
+# mode 0700 and root-owned so nothing outside the gate can plant entries in it —
+# the reason the harness does not use the system temp dir, where a predictable
+# name under a world-writable directory would be a symlink-attack surface for a
+# process running as root.
+RUN mkdir -p /cache /gate-work && chmod 700 /gate-work
+ENV CARGO_TARGET_DIR=/cache/cargo-target \
+    npm_config_cache=/cache/npm \
+    UV_CACHE_DIR=/cache/uv \
+    PYTHONDONTWRITEBYTECODE=1
+
 ENTRYPOINT ["/usr/local/bin/grizzly-gate"]

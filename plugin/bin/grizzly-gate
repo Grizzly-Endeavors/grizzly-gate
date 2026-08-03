@@ -44,13 +44,23 @@ elif [ "$PULL" = 1 ] || { [ "$PULL" = auto ] && [ "${IMAGE##*:}" = latest ]; }; 
   docker pull "$IMAGE" || echo "grizzly-gate: refresh failed; using cached $IMAGE." >&2
 fi
 
-# Mount the working tree read-write and run from it: the node tsconfig wrapper,
-# the per-project deps install (node_modules / Python .venv), and the report dir
-# are written into the tree (all gitignorable). No
-# --sign/--image — a local pre-check verifies the honest map + every source
+# Mount the working tree read-write and run from it. The gate leaves it as it
+# found it: build output and package caches go to the /cache volume below, the
+# Python virtualenv and per-tool caches to a scratch dir inside the container,
+# and what must be written into the tree (the node tsconfig wrapper, `npm ci`'s
+# node_modules, an editable install's *.egg-info) is undone before the run
+# returns. The one artifact left behind is grizzly-gate-report/report.json,
+# which the harness hands to whoever owns the checkout. See ADR-042.
+#
+# The named volume keeps cargo/npm/uv caches warm across runs without putting a
+# `target/` in your repo. Drop it with `docker volume rm grizzly-gate-cache`;
+# runs still work without it, just cold.
+#
+# No --sign/--image — a local pre-check verifies the honest map + every source
 # check and writes grizzly-gate-report/report.json, but never signs.
 exec docker run --rm \
   -v "$PWD:/src" \
+  -v grizzly-gate-cache:/cache \
   -w /src \
   "$IMAGE" \
   --source /src \

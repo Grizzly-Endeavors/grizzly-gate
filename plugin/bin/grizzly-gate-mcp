@@ -39,8 +39,12 @@ elif [ "$PULL" = 1 ] || { [ "$PULL" = auto ] && [ "${IMAGE##*:}" = latest ]; }; 
   docker pull "$IMAGE" >&2 || echo "grizzly-gate: refresh failed; using cached $IMAGE." >&2
 fi
 
+# The /cache volume is shared with bin/grizzly-gate so both entry points reuse
+# one warm cargo/npm/uv cache — and so neither leaves build output in the repo
+# (ADR-042).
 exec docker run -i --rm \
   -v "$PWD:/src" \
+  -v grizzly-gate-cache:/cache \
   -w /src \
   "$IMAGE" \
   mcp --source /src

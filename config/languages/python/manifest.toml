@@ -10,29 +10,28 @@ marker = "pyproject.toml"
 extensions = ["py", "pyi"]
 shebangs = ["python", "python3"]
 
-# Install the repo's deps into a per-project `.venv` BEFORE mypy/pytest run — the
-# Node `npm ci` analog. Without this, third-party imports resolve to `Any` (mypy
-# strict cascades) and the repo's own package isn't importable (pytest collection
-# fails). uv is a gate-side installer detail using its pip interface against the
-# repo's STANDARD inputs (requirements.txt / pyproject) — a repo never has to
-# adopt uv. Hybrid first-party resolution: editable-install when the repo is a
-# package (`[project]`/`[build-system]`), else install requirements.txt and let
-# `pythonpath = .` (gate pytest.ini) resolve first-party code by rootdir. pytest
-# is installed INTO the venv (it must run in-process with the deps; no
+# Install the repo's deps into a per-project virtualenv BEFORE mypy/pytest run —
+# the Node `npm ci` analog. Without this, third-party imports resolve to `Any`
+# (mypy strict cascades) and the repo's own package isn't importable (pytest
+# collection fails). uv is a gate-side installer detail using its pip interface
+# against the repo's STANDARD inputs (requirements.txt / pyproject) — a repo never
+# has to adopt uv. Hybrid first-party resolution: editable-install when the repo
+# is a package (`[project]`/`[build-system]`), else install requirements.txt and
+# let `pythonpath = .` (gate pytest.ini) resolve first-party code by rootdir.
+# pytest is installed INTO the venv (it must run in-process with the deps; no
 # `--python-executable` flag like mypy) at the Dockerfile-pinned version, exposed
-# as $GATE_PYTEST_VERSION so the pin stays single-sourced. `.venv` is in
-# detect.toml skip_dirs (honest-map-safe) and excluded from trivy-fs. See ADR-032.
+# as $GATE_PYTEST_VERSION so the pin stays single-sourced. See ADR-032.
 #
-# `uv venv --clear` is mandatory, not optional: the gate mounts the working tree
-# read-write and leaves `.venv` on disk, so on every run after the first the dir
-# already exists — and `uv venv` (unlike `npm ci`) errors out on a pre-existing
-# venv instead of reusing it. Without --clear the deps check fails on the second
-# run onward, cascading into mypy/pytest (which invoke `.venv/bin/...`). --clear
-# rebuilds the venv from scratch each run, which is the faithful `npm ci` analog
-# anyway: a clean, reproducible dependency set, not an accreted one.
+# The venv lives at `{work}/venv` — a per-project scratch dir inside the gate
+# container, not `.venv` in the scanned repo. The gate mounts the working tree
+# read-write, so anything written beside the source outlives the run in the
+# caller's checkout; `{work}` is created and deleted per run, which keeps the
+# tree clean and makes each run's dependency set reproducible rather than
+# accreted. The `--python` flag on every install pins uv to that venv instead of
+# whatever it would discover from the working directory. See ADR-042.
 [[checks]]
 name = "deps"
-cmd = "sh -c 'set -eu; uv venv .venv --clear; if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi; if grep -qE \"^\\[(project|build-system)\\]\" pyproject.toml; then uv pip install -e .; fi; uv pip install \"pytest==$GATE_PYTEST_VERSION\"'"
+cmd = "sh -c 'set -eu; uv venv {work}/venv; if [ -f requirements.txt ]; then uv pip install --python {work}/venv/bin/python -r requirements.txt; fi; if grep -qE \"^\\[(project|build-system)\\]\" pyproject.toml; then uv pip install --python {work}/venv/bin/python -e .; fi; uv pip install --python {work}/venv/bin/python \"pytest==$GATE_PYTEST_VERSION\"'"
 
 [[checks]]
 name = "ruff"
@@ -45,7 +44,10 @@ name = "ruff"
 # .mypy_cache/.pytest_cache/.ruff_cache/.tox/dist/node_modules, but NOT target/
 # vendor/__pycache__/.cargo/.gradle/build/.svelte-kit — {skip_dirs} closes that
 # gap regardless of which subset ruff's own defaults happen to cover.
-cmd = "ruff check --output-format json --extend-exclude {skip_dirs} --config {config}/ruff.toml ."
+#
+# --cache-dir keeps ruff's incremental cache in the run's scratch dir instead of
+# a `.ruff_cache` beside the source (ADR-042).
+cmd = "ruff check --output-format json --extend-exclude {skip_dirs} --config {config}/ruff.toml --cache-dir {work}/ruff-cache ."
 output = { parser = "ruff" }
 
 [[checks]]
@@ -63,7 +65,10 @@ name = "mypy"
 # comma list and the `sh -c` wrapper turns it into a `(^|/)(a|b|c)(/|$)`
 # alternation via `tr` at run time, so mypy skips the same generated/vendor
 # dirs the honest-map walk does.
-cmd = "sh -c 'exec mypy --output json --config-file {config}/mypy.ini --python-executable .venv/bin/python --exclude \"(^|/)($(printf %s \"$GATE_SKIP_DIRS\" | tr \",\" \"|\"))(/|$)\" .'"
+#
+# --cache-dir keeps mypy's incremental cache in the run's scratch dir instead of
+# a `.mypy_cache` beside the source (ADR-042).
+cmd = "sh -c 'exec mypy --output json --config-file {config}/mypy.ini --python-executable {work}/venv/bin/python --cache-dir {work}/mypy-cache --exclude \"(^|/)($(printf %s \"$GATE_SKIP_DIRS\" | tr \",\" \"|\"))(/|$)\" .'"
 env = { GATE_SKIP_DIRS = "{skip_dirs}" }
 output = { parser = "mypy" }
 
@@ -71,4 +76,9 @@ output = { parser = "mypy" }
 name = "pytest"
 # Run from the venv so the repo's installed package + third-party deps import;
 # the gate pytest.ini (pythonpath = .) covers the loose-layout case.
-cmd = ".venv/bin/pytest -c {config}/pytest.ini -q"
+#
+# `-p no:cacheprovider` disables pytest's cache plugin, which would otherwise
+# write a `.pytest_cache` beside the source. Nothing here reads it — the gate
+# runs a suite once, never `--last-failed` — so there is nothing to relocate to
+# `{work}`, only something to switch off (ADR-042).
+cmd = "{work}/venv/bin/pytest -c {config}/pytest.ini -p no:cacheprovider -q"
