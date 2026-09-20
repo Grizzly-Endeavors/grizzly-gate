@@ -112,3 +112,12 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# First-party crates are shared across the fleet by git rev-pin rather than
+# through a registry — there is no private cargo registry on the platform, and
+# publishing internal libraries to crates.io would make them public. Without
+# this, any repo depending on a sibling Grizzly-Endeavors crate fails the gate
+# and can never be signed, which is what `unknown-git = "deny"` would otherwise
+# cost us. A rev-pinned dependency is immutable, so this admits a fixed commit
+# in our own org rather than a mutable branch anyone could move.
+[sources.allow-org]
+github = ["Grizzly-Endeavors"]
