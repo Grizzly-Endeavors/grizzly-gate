@@ -1,28 +1,3 @@
-//! MCP (Model Context Protocol) server mode for the gate.
-//!
-//! The gate normally runs once and prints a verdict; on a failure that verdict
-//! carries the full, untruncated output of every failing check — exactly the
-//! kind of payload that overwhelms an agent's context window when it's read
-//! wholesale. This module serves the gate over MCP instead, so an agent can run
-//! the gate and then pull *one* check's output (a page at a time) on demand,
-//! rather than ingesting the whole report.
-//!
-//! Transport is the MCP stdio convention: newline-delimited JSON-RPC 2.0, one
-//! message per line, requests on stdin and responses on stdout. The gate's own
-//! human progress log is routed to **stderr** (see [`crate::execute`]) so it can
-//! never corrupt the protocol stream on stdout.
-//!
-//! The protocol surface is deliberately tiny — `initialize`, `tools/list`,
-//! `tools/call`, `ping` — and hand-rolled on `serde_json` rather than pulling in
-//! an MCP SDK + async runtime, keeping this lean binary dependency-light. The
-//! four tools are:
-//!
-//! - `run_gate` — run the gate and return a compact verdict (counts + failing
-//!   labels + honest-map violation classes), never the raw output.
-//! - `get_check_output` — fetch one check's output by label, line-paginated.
-//! - `list_honest_map_violations` — the structured phase-1 violations, in full.
-//! - `get_report_summary` — the last run's compact verdict without re-running.
-
 use std::io::{BufRead, Write};
 use std::path::Path;
 
@@ -32,17 +7,10 @@ use serde_json::{json, Value};
 use crate::config;
 use crate::report::{Check, Finding, Report};
 
-/// MCP protocol revision advertised when the client doesn't request one. The
-/// client's requested version is echoed back when present, for forward compat.
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// Default page size (lines) for `get_check_output` when the caller gives no
-/// `limit_lines` — large enough to be useful, small enough to stay context-safe.
 const DEFAULT_LIMIT_LINES: usize = 200;
 
-/// Serve the gate over MCP on stdio until stdin closes. `tree` and `source` are
-/// resolved once by the caller; `report_dir` is where each run's `report.json`
-/// is written and where a prior run is read back from.
 pub fn serve(tree: &config::Tree, source: &Path, report_dir: &Path) -> Result<()> {
     let mut server = Server {
         tree,
@@ -65,9 +33,6 @@ pub fn serve(tree: &config::Tree, source: &Path, report_dir: &Path) -> Result<()
     Ok(())
 }
 
-/// Per-session server state: the resolved config + source, the report directory,
-/// and the last run's report (lazily loaded from disk so a summary query before
-/// the first in-session `run_gate` can still answer from a prior run).
 struct Server<'a> {
     tree: &'a config::Tree,
     source: &'a Path,
@@ -76,9 +41,6 @@ struct Server<'a> {
 }
 
 impl Server<'_> {
-    /// Parse one JSON-RPC line and produce the response line, or `None` for a
-    /// notification (which gets no reply). A malformed line is answered with a
-    /// parse error rather than killing the session.
     fn handle_line(&mut self, line: &str) -> Option<String> {
         let msg: Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -96,7 +58,6 @@ impl Server<'_> {
             .unwrap_or_default();
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
-        // No id ⇒ a notification: act on it if we care, but never reply.
         let id = msg.get("id").cloned()?;
 
         Some(match self.handle_request(method, &params) {
@@ -105,8 +66,6 @@ impl Server<'_> {
         })
     }
 
-    /// Dispatch a request method to its handler. `Ok` carries the JSON-RPC
-    /// `result`; `Err((code, message))` becomes a JSON-RPC error object.
     fn handle_request(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         match method {
             "initialize" => Ok(initialize_result(params)),
@@ -117,7 +76,6 @@ impl Server<'_> {
         }
     }
 
-    /// Handle `tools/call`: route by tool name to the matching gate operation.
     fn tools_call(&mut self, params: &Value) -> Result<Value, (i64, String)> {
         let name = params
             .get("name")
@@ -133,9 +91,6 @@ impl Server<'_> {
         }
     }
 
-    /// Run the gate once against the source tree, write the report, cache it, and
-    /// return the compact verdict. Never signs and never scans an image — the
-    /// same source-only surface as a local pre-check.
     fn run_gate(&mut self) -> Value {
         let mut log = std::io::stderr().lock();
         let run = match crate::execute(&mut log, self.tree, self.source, None) {
@@ -153,8 +108,6 @@ impl Server<'_> {
         tool_result(&summary)
     }
 
-    /// Return the last run's compact verdict without re-running, loading a prior
-    /// run's report from disk if this session hasn't run the gate yet.
     fn report_summary(&mut self) -> Value {
         self.ensure_cached();
         match &self.cached {
@@ -165,8 +118,6 @@ impl Server<'_> {
         }
     }
 
-    /// Fetch one check's output by label, paginated by line. Keeps the big
-    /// output blobs out of context until a specific failing check is inspected.
     fn check_output(&mut self, args: &Value) -> Value {
         let Some(label) = args.get("label").and_then(Value::as_str) else {
             return tool_error("get_check_output requires a string `label` argument");
@@ -190,17 +141,12 @@ impl Server<'_> {
             ));
         };
 
-        // Findings mode: structured records (optionally severity-filtered),
-        // paginated by finding. Only when not asked for raw and findings exist.
         if !raw && !check.findings.is_empty() {
             return tool_result(&findings_payload(check, severity, offset, limit));
         }
         tool_result(&text_payload(check, raw, offset, limit))
     }
 
-    /// Return the full structured phase-1 honest-map violations (class, language,
-    /// path, reason). These are short, so unlike check output they're returned
-    /// whole.
     fn honest_map(&mut self) -> Value {
         self.ensure_cached();
         let Some(report) = &self.cached else {
@@ -223,8 +169,6 @@ impl Server<'_> {
         tool_result(&json!({ "count": violations.len(), "violations": violations }))
     }
 
-    /// Populate `cached` from `report.json` on disk if it isn't already set. A
-    /// read/parse failure leaves the cache empty; the caller surfaces "no run".
     fn ensure_cached(&mut self) {
         if self.cached.is_none() {
             self.cached = Report::read(self.report_dir).ok().flatten();
@@ -232,8 +176,6 @@ impl Server<'_> {
     }
 }
 
-/// The `initialize` result: advertise tool capability and echo the client's
-/// requested protocol version (or our default) back.
 fn initialize_result(params: &Value) -> Value {
     let version = params
         .get("protocolVersion")
@@ -287,9 +229,6 @@ fn tools_list() -> Value {
     })
 }
 
-/// Build the `findings`-mode `get_check_output` payload for a check: structured
-/// findings (optionally severity-filtered), paginated by finding. Shared by the
-/// MCP tool and the sample generator so the documented agent payload can't drift.
 pub(crate) fn findings_payload(
     check: &Check,
     severity: Option<&str>,
@@ -310,9 +249,6 @@ pub(crate) fn findings_payload(
         .iter()
         .filter_map(|f| serde_json::to_value(f).ok())
         .collect();
-    // Lean envelope: just what an agent branches on. The label/cmd/ok/exit_code
-    // it already has from run_gate; offset/returned it can derive. `total` +
-    // `has_more` are the paging signal; `mode` discriminates the response shape.
     json!({
         "mode": "findings",
         "total": total,
@@ -321,8 +257,6 @@ pub(crate) fn findings_payload(
     })
 }
 
-/// Build the text-mode `get_check_output` payload: the distilled (focused) text
-/// by default, or the verbatim raw output when `raw` is set, paginated by line.
 pub(crate) fn text_payload(check: &Check, raw: bool, offset: usize, limit: usize) -> Value {
     let (mode, body) = if raw {
         ("raw", &check.output)
@@ -338,8 +272,6 @@ pub(crate) fn text_payload(check: &Check, raw: bool, offset: usize, limit: usize
     })
 }
 
-/// The compact verdict shared by `run_gate` and `get_report_summary`: counts and
-/// labels, never raw check output.
 fn summary(report: &Report) -> Value {
     let checks = report.checks();
     let failing: Vec<&str> = checks
@@ -347,8 +279,6 @@ fn summary(report: &Report) -> Value {
         .filter(|c| !c.ok)
         .map(|c| c.label.as_str())
         .collect();
-    // Per-failing-check finding counts, so the fix loop can size each failure
-    // before pulling its output. Omits checks with no parsed findings (text tools).
     let failing_findings: Vec<Value> = checks
         .iter()
         .filter(|c| !c.ok && !c.findings.is_empty())
@@ -377,42 +307,28 @@ fn summary(report: &Report) -> Value {
     })
 }
 
-/// Wrap a JSON value as a successful `tools/call` result: a single text content
-/// block carrying the compact JSON, which is what an MCP client renders.
 fn tool_result(value: &Value) -> Value {
     json!({ "content": [{ "type": "text", "text": value.to_string() }] })
 }
 
-/// A `tools/call` result flagged as an error (MCP convention: tool-level errors
-/// are results with `isError`, not JSON-RPC protocol errors).
 fn tool_error(message: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": message }], "isError": true })
 }
 
-/// A full JSON-RPC success response line.
 fn result_response(id: &Value, result: &Value) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
 }
 
-/// A full JSON-RPC error response line.
 fn error_response(id: &Value, code: i64, message: &str) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }).to_string()
 }
 
-/// One page of a check's output, plus the metadata a caller needs to keep
-/// paging without ever loading the whole blob.
 struct Page {
-    /// Total lines in the check's output.
     total: usize,
-    /// Whether lines remain after this page.
     has_more: bool,
-    /// The page text (lines re-joined with `\n`).
     text: String,
 }
 
-/// Slice `output` into a page of at most `limit` lines starting at line `offset`
-/// (0-based). An out-of-range `offset` yields an empty page rather than an error,
-/// so a caller can page to the end without tracking the exact length itself.
 fn paginate(output: &str, offset: usize, limit: usize) -> Page {
     let all: Vec<&str> = output.lines().collect();
     let total = all.len();
@@ -426,17 +342,12 @@ fn paginate(output: &str, offset: usize, limit: usize) -> Page {
     }
 }
 
-/// Read an unsigned integer argument as `usize`, clamping an over-large value to
-/// `usize::MAX` rather than truncating it.
 fn json_usize(args: &Value, key: &str) -> Option<usize> {
     args.get(key)
         .and_then(Value::as_u64)
         .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
-/// Render a serializable enum (Verdict/Phase/ViolationClass) to its serde string
-/// form, so the wire spelling stays in lockstep with the report schema instead
-/// of being duplicated in a match here.
 fn enum_str<T: serde::Serialize>(value: T) -> String {
     serde_json::to_value(value)
         .ok()
@@ -511,7 +422,6 @@ mod tests {
         assert_eq!(s.get("checks_total").and_then(Value::as_u64), Some(2));
         assert_eq!(s.get("checks_failed").and_then(Value::as_u64), Some(1));
         assert_eq!(s.get("failing_check_labels"), Some(&json!(["rust:clippy"])));
-        // The compact verdict must NOT carry raw check output.
         assert!(
             !s.to_string().contains("boom"),
             "summary leaked raw output: {s}"

@@ -1,11 +1,3 @@
-//! grizzly-gate — the orchestration harness for the grizzly-platform CI gate.
-//!
-//! One artifact, centrally owned by Ops: it detects the stacks in a repo, runs
-//! the pinned per-language adapters + scanners defined in the `config/` tree,
-//! and — only if everything passes — signs the built image with cosign. The
-//! signature is the single proof that travels forward to the deploy boundary,
-//! where Kyverno refuses to admit any image lacking it.
-
 mod config;
 mod detect;
 mod distill;
@@ -24,8 +16,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::Instant;
 
-/// Config tree baked into the image; overridable per-invocation with `--config`
-/// or the `GRIZZLY_GATE_CONFIG_DIR` env var.
 const DEFAULT_CONFIG_DIR: &str = "/etc/grizzly-gate/config";
 
 #[derive(Parser)]
@@ -35,30 +25,21 @@ const DEFAULT_CONFIG_DIR: &str = "/etc/grizzly-gate/config";
     about = "grizzly-platform CI gate harness"
 )]
 struct Cli {
-    /// Optional subcommand. With none, the gate runs once against `--source` and
-    /// exits non-zero on a failed verdict (the default CI / local pre-check flow).
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Repository checkout to gate.
     #[arg(long, default_value = ".")]
     source: PathBuf,
 
-    /// Built image reference (pin to a digest) to scan and, on pass, sign.
     #[arg(long)]
     image: Option<String>,
 
-    /// Path to a config root directory (with `languages/` and/or `util/`);
-    /// falls back to `GRIZZLY_GATE_CONFIG_DIR`, then the tree baked into the
-    /// image.
     #[arg(long)]
     config: Option<PathBuf>,
 
-    /// Sign the image with cosign on pass. Requires --image and --cosign-key.
     #[arg(long)]
     sign: bool,
 
-    /// cosign private-key reference (file path, or `env://`/`openbao://` ref).
     #[arg(long)]
     cosign_key: Option<String>,
 
@@ -67,38 +48,27 @@ struct Cli {
     #[arg(long)]
     insecure_registry: bool,
 
-    /// Directory for the machine-readable run report (`report.json`). Written on
-    /// every run; holds the full untruncated output of every check.
     #[arg(long, default_value = "./grizzly-gate-report")]
     report_dir: PathBuf,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serve the gate over the Model Context Protocol (newline-delimited
-    /// JSON-RPC on stdio). Lets an agent run the gate and pull one check's
-    /// output at a time, instead of ingesting the whole report into context.
-    /// Never signs — the same source-only surface as a local pre-check.
     Mcp(McpArgs),
 }
 
 #[derive(clap::Args)]
 struct McpArgs {
-    /// Repository checkout to gate.
     #[arg(long, default_value = ".")]
     source: PathBuf,
 
-    /// Config root override (see `--config` on the top-level command).
     #[arg(long)]
     config: Option<PathBuf>,
 
-    /// Directory the run report is written to and read back from.
     #[arg(long, default_value = "./grizzly-gate-report")]
     report_dir: PathBuf,
 }
 
-/// Resolve the config root: explicit `--config`, else `GRIZZLY_GATE_CONFIG_DIR`,
-/// else the tree baked into the image.
 fn resolve_config_root(explicit: Option<&Path>) -> PathBuf {
     explicit
         .map(Path::to_path_buf)
@@ -106,10 +76,6 @@ fn resolve_config_root(explicit: Option<&Path>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_DIR))
 }
 
-/// The outcome of one gate run, decoupled from how it is presented: the report
-/// (carrying every check's full output), plus the in-memory step results for the
-/// run-mode FAILURES replay. On a phase-1 honest-map failure, `honest_map_message`
-/// holds the rich human explanation that the report's structured violations don't.
 pub struct GateRun {
     pub report: Report,
     pub honest_map_message: Option<String>,
@@ -118,27 +84,18 @@ pub struct GateRun {
 
 struct StepResult {
     label: String,
-    /// Language adapter this step belongs to (`None` for repo-wide scanners).
     language: Option<String>,
-    /// Project path the step ran in (`None` for repo-wide scanners).
     project: Option<String>,
-    /// The rendered command line that ran (placeholders already substituted).
     cmd: String,
     ok: bool,
-    /// Process exit code, or `None` if the tool could not be spawned/parsed.
     exit_code: Option<i32>,
     secs: f64,
-    /// Normalized findings distilled from a structured tool (empty otherwise).
     findings: Vec<report::Finding>,
-    /// Focused text surface — what the terminal and MCP show by default.
     distilled: String,
-    /// Full, untruncated combined stdout+stderr — the durable record copied
-    /// verbatim into `report.json`.
     output: String,
 }
 
 impl StepResult {
-    /// Build the report row for this step.
     fn to_report(&self) -> report::Check {
         report::Check {
             label: self.label.clone(),
@@ -163,9 +120,6 @@ fn main() -> Result<()> {
     }
 }
 
-/// Serve the gate over MCP on stdio. Loads the config tree and resolves the
-/// source once, then hands control to the protocol loop. All of the gate's own
-/// human logging is routed to stderr so stdout carries only JSON-RPC.
 fn run_mcp(args: &McpArgs) -> Result<()> {
     let config_root = resolve_config_root(args.config.as_deref());
     let tree = config::load_tree(&config_root)
@@ -177,8 +131,6 @@ fn run_mcp(args: &McpArgs) -> Result<()> {
     mcp::serve(&tree, &source, &args.report_dir)
 }
 
-/// The default flow: run the gate once, print the human verdict, write the
-/// report, sign on a clean pass, and exit non-zero on any failure.
 fn run_once(cli: &Cli) -> Result<()> {
     let config_root = resolve_config_root(cli.config.as_deref());
     let tree = config::load_tree(&config_root)
@@ -189,8 +141,6 @@ fn run_once(cli: &Cli) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("resolving source path {}", cli.source.display()))?;
 
-    // The gate's progress log goes to stdout in this mode. Scope the lock so the
-    // verdict block below can use `println!` freely once the run has finished.
     let run = {
         let mut out = std::io::stdout().lock();
         execute(&mut out, &tree, &source, cli.image.as_deref())?
@@ -201,10 +151,7 @@ fn run_once(cli: &Cli) -> Result<()> {
         results,
     } = run;
 
-    // --- Phase-1 honest-map failure: record, point at the report, fail closed.
     if let Some(message) = honest_map_message {
-        // The report is best-effort here; a write failure must not mask the
-        // actual honest-map failure, so surface it as a warning and continue.
         match report.write(&cli.report_dir) {
             Ok(path) => println!(
                 "\ngrizzly-gate :: honest-map violations recorded to {} \
@@ -219,7 +166,6 @@ fn run_once(cli: &Cli) -> Result<()> {
 
     let report_path = report.write(&cli.report_dir)?;
 
-    // --- Verdict -----------------------------------------------------------
     println!("\n────────────────────────── gate summary ──────────────────────────");
     let mut failed = 0_usize;
     for r in &results {
@@ -241,7 +187,6 @@ fn run_once(cli: &Cli) -> Result<()> {
         report_path.display()
     );
 
-    // --- Sign on pass ------------------------------------------------------
     if cli.sign {
         let image = cli
             .image
@@ -258,11 +203,6 @@ fn run_once(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Run both gate phases against `source`, logging progress to `log`, and return
-/// the structured outcome without presenting or signing it. Shared by the
-/// run-once flow (logs to stdout) and the MCP server (logs to stderr, keeping
-/// stdout clean for JSON-RPC). Writing the report and acting on the verdict are
-/// the caller's job.
 pub fn execute(
     log: &mut dyn Write,
     tree: &config::Tree,
@@ -276,12 +216,6 @@ pub fn execute(
 
     let mut report = Report::new();
 
-    // --- Phase 1 — Honest map: required declaration, then independent
-    // verification. The repo must ship a gate-config.json that truthfully maps
-    // its layout, and the tree must contain no undeclared or unsupported code.
-    // Phase 1 must pass *completely* before Phase 2 runs — a repo that lies
-    // about (or omits) its contents never reaches the checks, let alone signing.
-    // Each stage reports *all* of its problems at once (no first-failure churn).
     writeln!(log, "\n── Phase 1: honest map ──")?;
     let projects = match gateconfig::load(source, tree) {
         Ok(projects) => projects,
@@ -305,8 +239,6 @@ pub fn execute(
     }
     writeln!(log, "grizzly-gate :: honest-map verification passed")?;
 
-    // --- Phase 2 — Checks. Every adapter check and scanner runs; none of them
-    // short-circuit the run, so the verdict reflects every failure at once.
     writeln!(log, "\n── Phase 2: checks ──")?;
     let results = run_checks(log, tree, source, image, &projects)?;
     if results.is_empty() {
@@ -321,9 +253,6 @@ pub fn execute(
     })
 }
 
-/// Fold a phase-1 honest-map failure into a `GateRun`: record the structured
-/// violations on the report and carry the rich human message for the caller to
-/// present. Phase 2 never runs.
 fn fail_phase1(mut report: Report, failure: report::HonestMapFailure) -> GateRun {
     let report::HonestMapFailure {
         message,
@@ -337,21 +266,13 @@ fn fail_phase1(mut report: Report, failure: report::HonestMapFailure) -> GateRun
     }
 }
 
-/// Maximum tail of a failing check's output replayed in the FAILURES block. The
-/// full, untruncated output always remains in report.json — this cap only keeps
-/// a pathological tool from flooding the terminal verdict.
 const FAILURE_TAIL_LINES: usize = 200;
 const FAILURE_TAIL_BYTES: usize = 16 * 1024;
 
-/// Replay each failing check's output (tail-capped) under the verdict, so the
-/// actionable detail sits with the result instead of scrolled away. Always
-/// points at the full report and the `jq` query for the complete output.
 fn print_failures(results: &[StepResult], report: &Report, report_path: &Path) {
     println!("\n──────────────────────────── FAILURES ────────────────────────────");
     for r in results.iter().filter(|r| !r.ok) {
         println!("\n▼ {}", r.label);
-        // Show the focused surface (findings rendered at display time, or the
-        // distilled text); the full raw output is still in report.json.
         let display = distill::display_text(&r.findings, &r.distilled);
         let (tail, truncated) = tail_cap(&display, FAILURE_TAIL_LINES, FAILURE_TAIL_BYTES);
         print!("{tail}");
@@ -375,16 +296,11 @@ fn print_failures(results: &[StepResult], report: &Report, report_path: &Path) {
     }
 }
 
-/// Return the last `max_lines`/`max_bytes` of `s` (whichever bound bites first)
-/// plus whether anything was dropped. Splits on a char boundary so the slice is
-/// always valid UTF-8.
 fn tail_cap(s: &str, max_lines: usize, max_bytes: usize) -> (String, bool) {
-    // Byte bound: keep the trailing `max_bytes`, advanced to a char boundary.
     let mut start = s.len().saturating_sub(max_bytes);
     while start < s.len() && !s.is_char_boundary(start) {
         start += 1;
     }
-    // Line bound: keep the trailing `max_lines` lines from there.
     let line_start = s
         .match_indices('\n')
         .rev()
@@ -394,47 +310,18 @@ fn tail_cap(s: &str, max_lines: usize, max_bytes: usize) -> (String, bool) {
     (s.get(cut..).unwrap_or_default().to_string(), cut > 0)
 }
 
-/// Placeholder substitutions for a command line and its env values: each
-/// `{source}`/`{image}`/`{config}` token is replaced with the corresponding
-/// value when present. `config` is the gate's config dir for the tool — the
-/// mechanism by which gate-owned config is forced onto it (via flags or env).
 #[derive(Clone, Copy)]
 struct Subst<'a> {
     source: Option<&'a str>,
     image: Option<&'a str>,
     config: Option<&'a str>,
-    /// Path passed to `tsc --project` for node projects: either the repo's own
-    /// tsconfig wrapped to force gate strictness, or the gate's base tsconfig.
     tsconfig: Option<&'a str>,
-    /// Ops-owned `skip_dirs` (the honest-map walk's excluded dir names), joined
-    /// with commas. A check can forward this to its tool — via the `{skip_dirs}`
-    /// token in its cmd or env — so the tool ignores the same dirs the gate does
-    /// not treat as first-party code (e.g. eslint, which otherwise lints
-    /// build/dist/.svelte-kit). Single-sourced from `detect.toml`.
     skip_dirs: Option<&'a str>,
-    /// Scratch dir private to this project inside the container ([`WorkRoot`]).
-    /// A check substitutes `{work}` for state it needs on disk but the scanned
-    /// repo must not be left holding — the Python adapter's virtualenv, per-tool
-    /// caches. Absent for scanners, which write nothing into the tree.
     work: Option<&'a str>,
 }
 
-/// Directory the image reserves for [`WorkRoot`], created mode 0700 and owned by
-/// root (`Dockerfile`). Deliberately *not* the system temp dir: the gate runs as
-/// root, and a predictably-named dir under a world-writable `/tmp` lets any
-/// local user pre-plant a symlink there and redirect what the gate writes
-/// through it. A private directory the image owns removes that whole class
-/// rather than racing it. Override with `GRIZZLY_GATE_WORK_DIR` to run the
-/// harness outside its container.
 const DEFAULT_WORK_DIR: &str = "/gate-work";
 
-/// Container-private scratch space for one gate run.
-///
-/// The gate mounts the scanned working tree read-write, so anything a check
-/// leaves beside the source outlives the run — in the caller's repo, owned by
-/// the container's root. Everything that does not *have* to live in the tree is
-/// pointed here instead, via the `{work}` token a check substitutes into its
-/// command line, and the whole thing is deleted when the run ends. See ADR-042.
 struct WorkRoot {
     path: PathBuf,
 }
@@ -444,9 +331,6 @@ impl WorkRoot {
         let base = std::env::var_os("GRIZZLY_GATE_WORK_DIR")
             .map_or_else(|| PathBuf::from(DEFAULT_WORK_DIR), PathBuf::from);
         let path = base.join(std::process::id().to_string());
-        // The MCP server serves many runs from one process, so this path repeats
-        // across them; start each from a known-empty dir rather than inheriting
-        // the last run's state.
         remove_path(&path)
             .with_context(|| format!("clearing stale work dir {}", path.display()))?;
         std::fs::create_dir_all(&path).with_context(|| {
@@ -459,8 +343,6 @@ impl WorkRoot {
         Ok(Self { path })
     }
 
-    /// Scratch dir private to one declared project, so two projects of the same
-    /// language never share a virtualenv or a cache.
     fn project_dir(&self, language: &str, idx: usize) -> Result<PathBuf> {
         let path = self.path.join(format!("{language}-{idx}"));
         std::fs::create_dir_all(&path)
@@ -480,8 +362,6 @@ impl Drop for WorkRoot {
     }
 }
 
-/// Remove `path` whatever it is — directory, symlink, or file. Already absent is
-/// success, so this is idempotent.
 fn remove_path(path: &Path) -> std::io::Result<()> {
     match path.symlink_metadata() {
         Ok(m) if m.is_dir() => std::fs::remove_dir_all(path),
@@ -491,8 +371,6 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// The dependency dir `npm ci` installs into, and the name a pre-existing one is
-/// parked under while the gate runs.
 const NODE_MODULES: &str = "node_modules";
 const NODE_MODULES_STASH: &str = ".grizzly-gate.node_modules";
 
@@ -510,7 +388,6 @@ const NODE_MODULES_STASH: &str = ".grizzly-gate.node_modules";
 /// is — and moved back by [`Self::restore`]. See ADR-042.
 struct NodeModulesStash {
     live: PathBuf,
-    /// Where the repo's own `node_modules` is parked, when it had one.
     stashed: Option<PathBuf>,
 }
 
@@ -525,9 +402,6 @@ impl NodeModulesStash {
             });
         }
         if stash.symlink_metadata().is_ok() {
-            // A stash a previous run was killed before it could restore. It, not
-            // what is live, holds the repo's own dependencies — keep it and drop
-            // the gate-installed leftovers, which self-heals that interruption.
             remove_path(&live)
                 .with_context(|| format!("removing stale gate install {}", live.display()))?;
         } else {
@@ -542,14 +416,11 @@ impl NodeModulesStash {
     }
 
     fn restore(self) {
-        // Best-effort on both steps: a failure here costs the caller a dirty
-        // tree, never a wrong verdict, so it is surfaced rather than raised.
         if let Err(e) = remove_path(&self.live) {
             eprintln!(
                 "grizzly-gate :: warning: could not remove gate-installed {}: {e}",
                 self.live.display()
             );
-            // Leave the stash parked rather than rename over what is still there.
             return;
         }
         if let Some(stash) = self.stashed {
@@ -564,14 +435,6 @@ impl NodeModulesStash {
     }
 }
 
-/// The `*.egg-info` directories a python project had before its adapter ran.
-///
-/// The deps check editable-installs the repo's own package so its first-party
-/// imports resolve (ADR-032), and an editable install writes an `*.egg-info`
-/// beside the package it describes — inside the tree, where no `{work}`
-/// redirection reaches. Anything by that name that was not there beforehand is
-/// therefore the gate's and is removed; anything that was is the repo's and is
-/// left alone.
 struct EggInfo {
     root: PathBuf,
     skip_dirs: Vec<String>,
@@ -602,10 +465,6 @@ impl EggInfo {
     }
 }
 
-/// Every `*.egg-info` directory under `root`, skipping the Ops-owned `skip_dirs`
-/// and `.git` — the same boundary the honest-map walk uses. An unreadable entry
-/// is skipped: worst case the gate leaves one generated dir behind, which is a
-/// dirty tree, never a wrong verdict.
 fn egg_info_dirs(root: &Path, skip_dirs: &[String]) -> BTreeSet<PathBuf> {
     walkdir::WalkDir::new(root)
         .into_iter()
@@ -624,12 +483,6 @@ fn egg_info_dirs(root: &Path, skip_dirs: &[String]) -> BTreeSet<PathBuf> {
         .collect()
 }
 
-/// Run one declared project's adapter checks, in that project's own directory.
-///
-/// Brackets the checks with the guards that keep the scanned repo clean: state
-/// that can live outside it is addressed through `work_dir` (the `{work}` token),
-/// and the two things that cannot — `npm ci`'s `node_modules` and an editable
-/// install's `*.egg-info` — are undone here once the checks finish. See ADR-042.
 fn run_adapter(
     log: &mut dyn Write,
     tree: &config::Tree,
@@ -659,16 +512,6 @@ fn run_adapter(
     let egg_info = (adapter.name == "python")
         .then(|| EggInfo::snapshot(&project.abs_path, &tree.detect.skip_dirs));
 
-    // For node, resolve the tsconfig the checks use. A repo-declared tsconfig
-    // is wrapped so its module/path resolution is honored while the gate's
-    // strictness is force-overridden; the wrapper is cleaned up after.
-    //
-    // Resolution is deferred until the first check that substitutes
-    // `{tsconfig}`: it shells out to `tsc --showConfig`, which must run
-    // AFTER the adapter's deps check (`npm ci`) because a repo's tsconfig
-    // may extend a generated config that only exists post-install — e.g.
-    // `SvelteKit`'s `.svelte-kit/tsconfig.json`, produced by the package's
-    // `prepare` script (`svelte-kit sync`).
     let mut ts: Option<ResolvedTsconfig> = None;
     let mut ts_resolved = false;
     for check in &adapter.checks {
@@ -711,12 +554,6 @@ fn run_adapter(
     Ok(results)
 }
 
-/// Run each declared project's adapter checks (in its own directory) and every
-/// scanner in scope, returning their results in execution order.
-///
-/// Adapters run per *declared project* — not by scanning the root for a marker —
-/// so a Rust crate in a subdir or a second project in a monorepo is checked
-/// exactly where the (already-verified) `gate-config.json` says it lives.
 fn run_checks(
     log: &mut dyn Write,
     tree: &config::Tree,
@@ -726,21 +563,12 @@ fn run_checks(
 ) -> Result<Vec<StepResult>> {
     let mut results: Vec<StepResult> = Vec::new();
 
-    // Ops-owned skip_dirs, comma-joined, so a check can hand its tool the same
-    // exclude list the honest-map walk uses (via the `{skip_dirs}` token).
     let skip_dirs = tree.detect.skip_dirs.join(",");
 
-    // The gate's own ESLint flat config ships as a `.tmpl` (so the honest-map
-    // walk doesn't flag the gate's config tree as undeclared node code when the
-    // gate gates itself). Materialize the live `.mjs` beside its node_modules
-    // before any node check runs; the guard removes it afterwards.
     let eslint_config = materialize_eslint_config(tree, projects)?;
 
-    // Scratch space for state the checks need on disk but the scanned repo must
-    // not be left holding. Deleted when this function returns, on every path.
     let work = WorkRoot::new()?;
 
-    // --- Language adapters, per declared project ---------------------------
     for (idx, project) in projects.iter().enumerate() {
         let adapter = tree
             .adapters
@@ -753,19 +581,12 @@ fn run_checks(
         )?);
     }
 
-    // Node checks are done; drop the materialized eslint config. Scanners walk
-    // the scanned source (not the gate's config dir), so this never affects them.
     if let Some(cfg) = eslint_config {
         cfg.cleanup();
     }
 
-    // The gate license-checks *dependencies*, not the scanned repo's own packages.
-    // osv-scanner resolves licenses from the registry, so a project's own
-    // (unpublished) crate(s) resolve to UNKNOWN and trip the license allowlist.
-    // Generate an osv config that license-ignores those crate names for this run.
     let osv_config = materialize_osv_config(tree, projects, &tree.detect.skip_dirs)?;
 
-    // --- Scanners ----------------------------------------------------------
     let source_str = source.to_string_lossy().to_string();
     for scanner in &tree.scanners {
         let cfg = scanner.config_dir.to_string_lossy().to_string();
@@ -775,8 +596,6 @@ fn run_checks(
             config: Some(&cfg),
             tsconfig: None,
             skip_dirs: Some(&skip_dirs),
-            // Scanners read the tree and write their reports to their own temp
-            // files; none of them needs scratch space in the repo.
             work: None,
         };
         let label = format!("scan:{}", scanner.name);
@@ -818,20 +637,14 @@ fn run_checks(
     Ok(results)
 }
 
-/// The tsconfig a node project's `tsc` check should use, plus any temp wrapper
-/// to clean up afterwards. Non-node adapters get `None`.
 struct ResolvedTsconfig {
-    /// Value substituted for `{tsconfig}` (an absolute path).
     arg: String,
-    /// Wrapper file to delete after the check (when a repo tsconfig was wrapped).
     temp: Option<PathBuf>,
 }
 
 impl ResolvedTsconfig {
     fn cleanup(self) {
         if let Some(p) = self.temp {
-            // Best-effort: the wrapper lives in an ephemeral CI checkout, but a
-            // failed unlink is surfaced rather than silently swallowed.
             if let Err(e) = std::fs::remove_file(&p) {
                 eprintln!(
                     "grizzly-gate :: warning: could not remove tsconfig wrapper {}: {e}",
@@ -842,8 +655,6 @@ impl ResolvedTsconfig {
     }
 }
 
-/// Generated wrapper filename written into a node project to force gate
-/// strictness on top of the repo's own tsconfig.
 const TS_WRAPPER: &str = ".grizzly-gate.tsconfig.json";
 
 fn resolve_tsconfig(
@@ -855,7 +666,6 @@ fn resolve_tsconfig(
         return Ok(None);
     }
     let Some(repo_ts) = &project.tsconfig else {
-        // No repo tsconfig declared: use the gate's strict base config as-is.
         let base = adapter.config_dir.join("tsconfig.base.json");
         return Ok(Some(ResolvedTsconfig {
             arg: base.to_string_lossy().to_string(),
@@ -863,22 +673,6 @@ fn resolve_tsconfig(
         }));
     };
 
-    // The wrapper's `exclude` must be the Ops-owned skip_dirs UNION whatever
-    // the repo's own tsconfig already excludes — `extends` does NOT merge
-    // `include`/`exclude` between parent and child: verified (via
-    // `tsc --showConfig`, pinned 6.0.3) that when both the wrapper and the
-    // repo config set `exclude`, the child's value fully REPLACES the
-    // parent's rather than adding to it. Naively adding `"exclude":
-    // [...skip_dirs]` to the wrapper would therefore silently drop any
-    // exclude the repo's own tsconfig declared. See ADR-039.
-    //
-    // `tsc --showConfig --project <repo_ts>` resolves the repo's own config
-    // exactly the way the real `tsc`/`svelte-check` checks will (same pinned
-    // binary), which sidesteps two problems a hand-rolled parse of the repo's
-    // tsconfig.json would hit: tsconfig.json is commonly JSONC (comments/
-    // trailing commas — `serde_json` chokes on both), and a repo's tsconfig
-    // may itself `extend` another config that owns the `exclude` — verified
-    // `--showConfig` resolves that chain transitively, not just one level.
     let repo_exclude = repo_tsconfig_exclude(adapter, project, repo_ts)?;
     let mut exclude: Vec<String> = skip_dirs.to_vec();
     for d in repo_exclude {
@@ -887,14 +681,6 @@ fn resolve_tsconfig(
         }
     }
 
-    // Wrap the repo tsconfig: `extends` it for module/path resolution, then
-    // force every strict compiler option locally. `extends` is overridden
-    // per-key by these locals, and `strict` is expanded into its full family so
-    // a repo cannot opt out of an individual sub-flag (e.g. strictNullChecks).
-    // tsc's default `include` (every TS file under the wrapper's dir, minus
-    // node_modules) means a repo cannot shrink the typechecked set either;
-    // `exclude` above additionally keeps skip_dirs (and the repo's own
-    // excludes) out of the typechecked set without dropping either.
     let wrapper = serde_json::json!({
         "extends": repo_ts.to_string_lossy(),
         "compilerOptions": {
@@ -982,22 +768,15 @@ fn repo_tsconfig_exclude(
         .unwrap_or_default())
 }
 
-/// Source-of-truth `ESLint` flat config filename (a template, not a live `.mjs`)
-/// and the live filename the harness materializes it to at run time. See
-/// [`materialize_eslint_config`] and ADR-033.
 const ESLINT_TEMPLATE: &str = "eslint.config.mjs.tmpl";
 const ESLINT_CONFIG: &str = "eslint.config.mjs";
 
-/// The live `eslint.config.mjs` the harness writes into the node config dir for
-/// the duration of a run, plus the path to remove afterwards.
 struct MaterializedEslintConfig {
     path: PathBuf,
 }
 
 impl MaterializedEslintConfig {
     fn cleanup(self) {
-        // Best-effort: the config dir lives inside the ephemeral gate container,
-        // but a failed unlink is surfaced rather than silently swallowed.
         if let Err(e) = std::fs::remove_file(&self.path) {
             eprintln!(
                 "grizzly-gate :: warning: could not remove eslint config {}: {e}",
@@ -1007,13 +786,6 @@ impl MaterializedEslintConfig {
     }
 }
 
-/// Materialize the gate's `ESLint` flat config from its shipped `.tmpl` into the
-/// node config dir, so eslint's `--config {config}/eslint.config.mjs` finds a
-/// real file whose bare plugin imports resolve against the sibling `node_modules`
-/// installed at image build. The config tree ships only the `.tmpl` (a non-detected
-/// extension) so the gate's honest-map walk never flags the gate's own config tree
-/// as undeclared node code when the gate gates itself. No-op (returns `None`) when
-/// no node project is declared, since no eslint check will run.
 fn materialize_eslint_config(
     tree: &config::Tree,
     projects: &[ResolvedProject],
@@ -1038,17 +810,10 @@ fn materialize_eslint_config(
     Ok(Some(MaterializedEslintConfig { path: dst }))
 }
 
-/// Config filename the harness generates into the osv-scanner config dir for the
-/// duration of a run (the manifest passes it via `--config`, which also disables
-/// osv-scanner's auto-discovery of a repo's own `osv-scanner.toml`).
 const OSV_CONFIG: &str = "osv-scanner.toml";
 
-/// Checked-in, gate-owned data file (sibling to the generated config) holding the
-/// fleet-accepted `[[IgnoredVulns]]` — non-vulnerability advisories the vuln-only
-/// gate accepts (ADR-035). Appended verbatim to the generated osv config. Optional.
 const OSV_IGNORES: &str = "ignored-advisories.toml";
 
-/// The generated `osv-scanner.toml`, plus the path to remove after the scanners.
 struct MaterializedOsvConfig {
     path: PathBuf,
 }
@@ -1064,14 +829,6 @@ impl MaterializedOsvConfig {
     }
 }
 
-/// Generate an `osv-scanner.toml` that excludes the scanned repo's OWN packages
-/// from license checking. osv-scanner resolves licenses from the registry, so a
-/// project's own unpublished crate(s) resolve to `UNKNOWN` and trip the license
-/// allowlist — but the gate license-checks *dependencies*, not the repo itself.
-/// The repo's crate names are collected by walking each declared Rust project for
-/// `Cargo.toml` `[package].name` (covering workspaces and nested crates); each is
-/// written as a `license.ignore` override. Returns `None` when no osv-scanner
-/// scanner is configured.
 fn materialize_osv_config(
     tree: &config::Tree,
     projects: &[ResolvedProject],
@@ -1089,8 +846,6 @@ fn materialize_osv_config(
          # dependencies, not the repo itself (vuln scanning is unaffected).\n",
     );
     for name in local_crate_names(projects, skip_dirs) {
-        // Cargo enforces crate names to `[A-Za-z0-9_-]`, so the name needs no TOML
-        // string escaping; embed it directly in a basic string.
         body.push_str("\n[[PackageOverrides]]\nname = \"");
         body.push_str(&name);
         body.push_str(
@@ -1099,9 +854,6 @@ fn materialize_osv_config(
         );
     }
 
-    // Append the fleet-accepted advisory ignores (vuln-only posture, ADR-035).
-    // Gate-owned data, not per-repo: a non-vulnerability advisory a downstream repo
-    // can't action is accepted here, not in the scanned tree. Absent file is fine.
     let ignores = scanner.config_dir.join(OSV_IGNORES);
     match std::fs::read_to_string(&ignores) {
         Ok(content) => {
@@ -1119,11 +871,6 @@ fn materialize_osv_config(
     Ok(Some(MaterializedOsvConfig { path: dst }))
 }
 
-/// Names of the repo's own crates across all declared Rust projects: every
-/// `Cargo.toml` under each project (minus the Ops-owned `skip_dirs` and `.git`)
-/// contributing its `[package].name`. Deduplicated and sorted. A `Cargo.toml`
-/// that cannot be read or parsed is skipped with a warning (worst case: a spurious
-/// license finding for that crate — fail-closed, never a missed dependency CVE).
 fn local_crate_names(
     projects: &[ResolvedProject],
     skip_dirs: &[String],
@@ -1149,8 +896,6 @@ fn local_crate_names(
     names
 }
 
-/// `[package].name` from a `Cargo.toml`, or `None` for a virtual workspace manifest
-/// (no `[package]`) or an unreadable/unparseable file (warned, not fatal).
 fn read_crate_name(path: &Path) -> Option<String> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -1174,17 +919,11 @@ fn read_crate_name(path: &Path) -> Option<String> {
     }
 }
 
-/// Parse `[package].name` from `Cargo.toml` text. `Ok(None)` for a virtual
-/// workspace manifest (no `[package]`); `Err` for unparseable TOML. Split from the
-/// IO in [`read_crate_name`] so the parse mapping is unit-testable without the
-/// filesystem (the directory walk itself is covered end-to-end by a gate run).
 fn crate_name_from_manifest(text: &str) -> Result<Option<String>, toml::de::Error> {
     let manifest: CargoManifest = toml::from_str(text)?;
     Ok(manifest.package.map(|p| p.name))
 }
 
-/// The slice of a `Cargo.toml` the gate needs: just `[package].name` (absent for a
-/// virtual workspace manifest). Unknown fields are ignored by default.
 #[derive(serde::Deserialize)]
 struct CargoManifest {
     package: Option<CargoPackage>,
@@ -1195,11 +934,6 @@ struct CargoPackage {
     name: String,
 }
 
-/// Run one command line in `cwd` after applying `subst` to the command and to
-/// each env value. Progress and the tool's captured output are written to `log`;
-/// the only fallible part is that logging, so the returned `Result` reflects a
-/// log write failure, not the check's own pass/fail (which lives in the
-/// `StepResult`).
 fn run(
     log: &mut dyn Write,
     label: &str,
@@ -1259,18 +993,9 @@ fn run(
     for (k, v) in env {
         command.env(k, apply(v));
     }
-    // Capture-only: collect the tool's combined output rather than streaming it,
-    // so the full text can be replayed in the FAILURES block and written
-    // verbatim to report.json. Checks run sequentially, so printing each one's
-    // captured output as it finishes preserves the same per-check ordering a
-    // live stream would have shown.
     let output = command.output();
     let secs = start.elapsed().as_secs_f64();
 
-    // `captured` is the durable raw record (stdout then stderr, verbatim).
-    // `findings`/`distilled` are the focused surface; distillation reads stdout
-    // and stderr separately so a structured parser sees only the JSON on stdout.
-    // The verdict (`ok`/`exit_code`) is the process status — never the parse.
     let (ok, exit_code, findings, distilled, captured) = match output {
         Ok(o) => {
             let out = String::from_utf8_lossy(&o.stdout);
@@ -1282,10 +1007,6 @@ fn run(
                 writeln!(log)?;
             }
             let (mut findings, distilled) = distill::apply(out_spec, &out, &err);
-            // Normalize tool-reported paths to repo-relative by stripping the
-            // directory the tool ran in (cwd: the project dir for adapters, the
-            // source root for scanners), so eslint/semgrep absolutes match the
-            // relative paths clippy/trivy emit.
             distill::relativize(&mut findings, &cwd.to_string_lossy());
             (
                 o.status.success(),
@@ -1315,12 +1036,7 @@ fn run(
     })
 }
 
-/// cosign sign by digest. `COSIGN_PASSWORD` is inherited from the environment
-/// (delivered to the runner by ESO from `OpenBao`).
 fn sign_image(image: &str, key: &str, insecure: bool) -> Result<()> {
-    // --tlog-upload=false keeps signing self-contained: no dependency on (and no
-    // digest leakage to) the public Rekor transparency log. Verification is
-    // key-based, so a transparency log isn't needed.
     let mut args = vec!["sign", "--yes", "--tlog-upload=false", "--key", key];
     if insecure {
         args.push("--allow-insecure-registry");
@@ -1373,9 +1089,6 @@ mod tests {
 
     #[test]
     fn skip_dirs_token_substituted_in_cmd_and_env() {
-        // The {skip_dirs} token must be forwarded both on the command line and in
-        // env values, so a check (e.g. eslint via GATE_SKIP_DIRS) can hand its
-        // tool the Ops-owned skip list. Mirrors the {tsconfig} wiring.
         let subst = Subst {
             source: None,
             image: None,
@@ -1411,9 +1124,6 @@ mod tests {
 
     #[test]
     fn work_token_substituted_in_cmd_and_env() {
-        // The {work} token points a check at scratch space inside the container
-        // instead of the scanned repo (the Python venv, ruff/mypy caches). Like
-        // {skip_dirs} it must reach both the command line and env values.
         let subst = Subst {
             source: None,
             image: None,
@@ -1446,8 +1156,6 @@ mod tests {
         );
     }
 
-    /// Stand in for `npm ci`: blow away whatever `node_modules` is there and
-    /// install something else, which is what makes the stash necessary.
     fn fake_npm_ci(project: &Path, marker: &str) {
         let dir = project.join(NODE_MODULES);
         std::fs::remove_dir_all(&dir).ok();
@@ -1457,11 +1165,6 @@ mod tests {
 
     #[test]
     fn node_modules_stash_restores_the_repos_own_install() {
-        // The gate mounts the working tree read-write and `npm ci` deletes and
-        // reinstalls node_modules in place, so without the stash a gate run
-        // costs the developer their installed dependencies (ADR-042). Park,
-        // install over it, restore — the repo's own copy must come back and no
-        // gate state may remain.
         let root = scratch("nm-restore");
         std::fs::remove_dir_all(&root).ok();
         let project = root.join("web");
@@ -1495,8 +1198,6 @@ mod tests {
 
     #[test]
     fn node_modules_stash_is_removed_when_the_repo_had_none() {
-        // The common case: nothing installed beforehand, so the gate's own
-        // install is the only thing there and must be gone afterwards.
         let root = scratch("nm-none");
         std::fs::remove_dir_all(&root).ok();
         let project = root.join("web");
@@ -1519,10 +1220,6 @@ mod tests {
 
     #[test]
     fn node_modules_stash_recovers_from_an_interrupted_run() {
-        // A run killed between park and restore leaves the stash on disk with
-        // the repo's real dependencies in it, and the gate's install live. The
-        // next run must keep the stash (the better copy) and discard the
-        // leftovers, rather than parking the gate's install over the top.
         let root = scratch("nm-interrupted");
         std::fs::remove_dir_all(&root).ok();
         let project = root.join("web");
@@ -1580,10 +1277,6 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> PathBuf {
-        // Ephemeral, uniquely-named test scratch dir (removed at end of the
-        // test); not a security-sensitive temp file. Mirrors the `scratch`
-        // helper in config.rs/gateconfig.rs/detect.rs.
-        // nosemgrep: temp-dir
         std::env::temp_dir().join(format!("gate-main-{tag}-{}", std::process::id()))
     }
 
@@ -1610,9 +1303,6 @@ mod tests {
         let bin_dir = config_dir.join("node_modules/.bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
 
-        // Simulates a repo tsconfig that (possibly via its own `extends` chain,
-        // possibly via JSONC comments `tsc` tolerates but `serde_json` would
-        // not) resolves to `exclude: ["something-else"]`.
         let stub_tsc = bin_dir.join("tsc");
         std::fs::write(
             &stub_tsc,
@@ -1677,21 +1367,12 @@ mod tests {
 
     #[test]
     fn tsconfig_resolution_waits_for_the_deps_check() {
-        // A repo's tsconfig may extend a config that only exists after the
-        // adapter's deps check has run — SvelteKit repos extend
-        // `.svelte-kit/tsconfig.json`, generated by `svelte-kit sync` in the
-        // package's `prepare` script during `npm ci`. `resolve_tsconfig` shells
-        // out to `tsc --showConfig`, so it must run after the deps check, not
-        // up front. Here the stub `tsc` fails unless a marker file exists and
-        // the first (deps-like) check is what creates it: eager resolution
-        // makes `run_checks` error out, deferred resolution passes.
         use std::os::unix::fs::PermissionsExt;
 
         let root = scratch("lazy-tsconfig");
         let config_dir = root.join("config/languages/node");
         let bin_dir = config_dir.join("node_modules/.bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
-        // materialize_eslint_config copies the shipped template on any node run.
         std::fs::write(config_dir.join(ESLINT_TEMPLATE), "export default [];\n").unwrap();
 
         let project_dir = root.join("project");
@@ -1748,10 +1429,6 @@ mod tests {
             tsconfig: Some(repo_ts),
         }];
 
-        // `run_checks` builds a `WorkRoot` under DEFAULT_WORK_DIR, which only the
-        // gate container has. Point it at this test's own scratch dir instead.
-        // No other test reads this variable, so setting it process-wide is safe
-        // under the parallel test runner.
         std::env::set_var("GRIZZLY_GATE_WORK_DIR", root.join("work"));
 
         let mut log = Vec::new();

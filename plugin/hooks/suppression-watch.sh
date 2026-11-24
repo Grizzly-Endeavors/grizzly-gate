@@ -27,8 +27,6 @@ grizzly_gate_disabled && exit 0
 
 input="$(cat)"
 file="$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""')"
-# Only the text this edit introduced: Edit.new_string, Write.content, or each
-# MultiEdit edit's new_string.
 added="$(printf '%s' "$input" | jq -r '[.tool_input.new_string, .tool_input.content, (.tool_input.edits[]?.new_string)] | map(select(. != null)) | join("\n")')"
 [ -n "$added" ] || exit 0
 
@@ -37,7 +35,6 @@ scoped=""
 case "$file" in
   *.rs)
     blanket="$(printf '%s\n' "$added" | grep -nE '#!?\[allow\(' || true)"
-    # expect WITH a reason is scoped; expect WITHOUT one is not properly scoped.
     scoped="$(printf '%s\n' "$added" | grep -nE '#!?\[expect\(' | grep -E 'reason[[:space:]]*=' || true)"
     no_reason="$(printf '%s\n' "$added" | grep -nE '#!?\[expect\(' | grep -vE 'reason[[:space:]]*=' || true)"
     blanket="$(printf '%s\n%s\n' "$blanket" "$no_reason" | grep -vE '^$' || true)"
@@ -51,10 +48,6 @@ case "$file" in
     scoped="$(printf '%s\n' "$added" | grep -nE '@ts-expect-error' || true)"
     ;;
   *.go)
-    # golangci-lint nolint directives. A bare //nolint (no specific linter named)
-    # is blanket; //nolint:<linter> is scoped. The gate additionally requires an
-    # explanation (nolintlint require-explanation), so even the scoped form is
-    # surfaced — a code fix is the right default.
     blanket="$(printf '%s\n' "$added" | grep -nE '//[[:space:]]*nolint([[:space:]]|$)' || true)"
     scoped="$(printf '%s\n' "$added" | grep -nE '//[[:space:]]*nolint:[a-zA-Z]' || true)"
     ;;
