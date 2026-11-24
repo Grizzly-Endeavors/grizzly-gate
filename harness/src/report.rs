@@ -1,48 +1,17 @@
-//! The structured, machine-queryable run report (`grizzly-gate-report/report.json`).
-//!
-//! Both gate phases feed one artifact, written on every run (pass or fail) so
-//! tooling can rely on its presence. Its reason for existing: a failing gate
-//! emits a lot of tool output, and an automated fix loop (or a human) should be
-//! able to pull *one* failing check's output with `jq` instead of ingesting the
-//! whole log. The full, untruncated output of every check lives here — the
-//! terminal's `FAILURES` block is the only place truncation happens, and it
-//! always points back to this file.
-//!
-//! - [`crate::gateconfig`] / [`crate::detect`] surface honest-map [`Violation`]s
-//!   via [`HonestMapFailure`] (which also carries the rich human message).
-//! - [`crate::main`] feeds [`Check`] rows and writes the file.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// Schema version of the emitted report. Bumped only on a breaking shape change
-/// so a consumer can refuse an unknown layout rather than misread it.
 pub const SCHEMA: u32 = 2;
 
-/// Report filename written inside the report dir.
 pub const FILE: &str = "report.json";
 
-/// Hand freshly-written artifacts to whoever owns the directory they landed in.
-///
-/// The gate runs as root inside its container against a bind-mounted working
-/// tree, so the report — the one thing a run is *meant* to leave behind — would
-/// otherwise land root-owned in the caller's repo, unreadable and undeletable by
-/// the user who asked for it. `dir`'s parent is the reference owner because `dir`
-/// itself may have just been created here. See ADR-042.
-///
-/// Best-effort by design: a report that exists but is misowned still beats
-/// failing the run over it. Paths already owned correctly are skipped, which
-/// makes this a silent no-op outside the container — where the writer is the
-/// owner already and the `chown` would fail for want of privilege anyway.
 fn adopt_dir_owner(dir: &Path, paths: &[&Path]) {
     use std::os::unix::fs::MetadataExt;
 
     let reference = match dir.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
-        // A bare relative report dir ("grizzly-gate-report") parents to "";
-        // either way the enclosing dir is the working directory.
         _ => Path::new("."),
     };
     let Ok(meta) = std::fs::metadata(reference) else {
@@ -50,7 +19,6 @@ fn adopt_dir_owner(dir: &Path, paths: &[&Path]) {
     };
     let (uid, gid) = (meta.uid(), meta.gid());
     if uid == 0 {
-        // Nobody to hand it back to — CI, where the checkout is root's anyway.
         return;
     }
     for path in paths {
@@ -74,17 +42,13 @@ fn adopt_dir_owner(dir: &Path, paths: &[&Path]) {
     }
 }
 
-/// One gate run, serialized to `report.json`.
 #[derive(Serialize, Deserialize)]
 pub struct Report {
     schema: u32,
     verdict: Verdict,
-    /// Which phase failed, if any. `None` on a clean pass.
     failed_phase: Option<Phase>,
     honest_map: HonestMap,
     checks: Vec<Check>,
-    /// `jq` recipes for reading this report, embedded so the query travels with
-    /// the artifact. Filled in at [`Report::write`] time from the real path.
     query_hints: Vec<String>,
 }
 
@@ -108,8 +72,6 @@ struct HonestMap {
     violations: Vec<Violation>,
 }
 
-/// One honest-map problem, structured for querying. The same problems are also
-/// rendered to a human message on [`HonestMapFailure`].
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Violation {
     pub class: ViolationClass,
@@ -123,20 +85,12 @@ pub struct Violation {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub enum ViolationClass {
-    /// The declaration itself is invalid (parse/version error, or a project
-    /// that doesn't resolve: unknown language, missing marker, bad path…).
     MalformedDeclaration,
-    /// Adapter-backed code in the tree not covered by any declared project.
     Undeclared,
-    /// A code language the gate has no adapter for — cannot be gated.
     Unsupported,
-    /// A node project containing TypeScript but declaring no `tsconfig`.
     TsWithoutTsconfig,
 }
 
-/// One normalized finding distilled from a structured tool's output. Every field
-/// but `message` is optional because tools vary in what they report; the harness
-/// maps each tool's native shape onto this common schema (see [`crate::distill`]).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,7 +99,6 @@ pub struct Finding {
     pub line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub col: Option<u32>,
-    /// Normalized severity: `error`, `warning`, or `note`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub severity: Option<String>,
     /// Tool rule / lint / advisory id (e.g. `clippy::unwrap_used`, `RUSTSEC-…`).
@@ -154,10 +107,6 @@ pub struct Finding {
     pub message: String,
 }
 
-/// One executed check (language adapter step or scanner). `output` is the full,
-/// untruncated combined stdout+stderr — this is the durable audit record.
-/// `findings`/`distilled` are the focused, presentation-only surface; they never
-/// influence `ok` (which is the process exit status).
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Check {
     pub label: String,
@@ -167,25 +116,15 @@ pub struct Check {
     pub project: Option<String>,
     pub cmd: String,
     pub ok: bool,
-    /// Process exit code, or `None` if the tool could not be spawned/parsed.
     pub exit_code: Option<i32>,
     pub duration_secs: f64,
-    /// Normalized findings parsed from a structured tool; empty for text tools
-    /// or when no parser is configured.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<Finding>,
-    /// Focused text surface for text-path tools (ANSI-stripped + noise-filtered)
-    /// or a parse-failure fallback. Empty for structured tools — their surface is
-    /// `findings`, rendered to text only at display time — and omitted from the
-    /// report when empty. Equals `output` when no `[output]` spec is configured.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub distilled: String,
     pub output: String,
 }
 
-/// A fatal honest-map failure: the rich human message *and* the structured
-/// violations behind it. Phase-1 code returns this so `main` can both print the
-/// message and record the violations in the report before failing closed.
 #[derive(Debug)]
 pub struct HonestMapFailure {
     pub message: String,
@@ -193,9 +132,6 @@ pub struct HonestMapFailure {
 }
 
 impl HonestMapFailure {
-    /// A whole-declaration failure that isn't per-project (missing file, parse
-    /// error, version mismatch, zero projects): one malformed-declaration
-    /// violation whose reason is the human message.
     pub fn whole(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
@@ -225,7 +161,6 @@ impl Default for Report {
 }
 
 impl Report {
-    /// A fresh report defaulting to a clean pass; mutate as phases run.
     pub fn new() -> Self {
         Self {
             schema: SCHEMA,
@@ -240,7 +175,6 @@ impl Report {
         }
     }
 
-    /// Record a phase-1 honest-map failure.
     pub fn fail_honest_map(&mut self, violations: Vec<Violation>) {
         self.verdict = Verdict::Fail;
         self.failed_phase = Some(Phase::HonestMap);
@@ -250,7 +184,6 @@ impl Report {
         };
     }
 
-    /// Record the executed checks; flips the verdict to fail if any check failed.
     pub fn set_checks(&mut self, checks: Vec<Check>) {
         if checks.iter().any(|c| !c.ok) {
             self.verdict = Verdict::Fail;
@@ -259,8 +192,6 @@ impl Report {
         self.checks = checks;
     }
 
-    /// Serialize to `<dir>/report.json`, creating `dir` if needed. Fills in the
-    /// `query_hints` from the real path first. Returns the written path.
     pub fn write(&mut self, dir: &Path) -> Result<PathBuf> {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating report dir {}", dir.display()))?;
@@ -280,16 +211,10 @@ impl Report {
         Ok(path)
     }
 
-    /// The `jq` recipes for this report (also embedded in the JSON). Printed in
-    /// the terminal `FAILURES` block so the query recipe is always at hand.
     pub fn query_hints(&self) -> &[String] {
         &self.query_hints
     }
 
-    /// Read a previously-written `report.json` from `dir`, if one exists. Returns
-    /// `Ok(None)` when no report has been written there yet (e.g. an MCP session
-    /// that queries the summary before its first run). A present-but-corrupt file
-    /// is surfaced as an error rather than silently treated as absent.
     pub fn read(dir: &Path) -> Result<Option<Self>> {
         let path = dir.join(FILE);
         let text = match std::fs::read_to_string(&path) {
@@ -302,22 +227,18 @@ impl Report {
         Ok(Some(report))
     }
 
-    /// The run verdict (pass/fail).
     pub fn verdict(&self) -> Verdict {
         self.verdict
     }
 
-    /// Which phase failed, if any.
     pub fn failed_phase(&self) -> Option<Phase> {
         self.failed_phase
     }
 
-    /// The executed checks (empty when phase 1 failed before any check ran).
     pub fn checks(&self) -> &[Check] {
         &self.checks
     }
 
-    /// The recorded honest-map violations (empty on a clean phase 1).
     pub fn honest_map_violations(&self) -> &[Violation] {
         &self.honest_map.violations
     }
@@ -328,7 +249,6 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        // nosemgrep: temp-dir
         std::env::temp_dir().join(format!("gate-report-{tag}-{}", std::process::id()))
     }
 
@@ -355,7 +275,6 @@ mod tests {
         assert_eq!(v.get("schema").unwrap(), SCHEMA, "schema");
         assert_eq!(v.get("verdict").unwrap(), "fail", "verdict");
         assert_eq!(v.get("failed_phase").unwrap(), "checks", "failed_phase");
-        // The full output is retrievable by a single-check lookup, untruncated.
         let out = v
             .get("checks")
             .and_then(|c| c.as_array())

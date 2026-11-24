@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# SessionStart guard: warn if docker is missing. The gate runs as a docker
-# container, so without docker on PATH none of /grizzly-gate:check, the push
-# guard, or the gate-fixer agent can run. Stays silent when docker is present,
-# so there is no toggle — it only speaks when something is actually wrong.
-# SessionStart cannot block; it only informs.
 set -euo pipefail
 
 source "${CLAUDE_PLUGIN_ROOT}/hooks/_common.sh"
@@ -11,7 +6,6 @@ grizzly_gate_disabled && exit 0
 
 input="$(cat)"
 src="$(printf '%s' "$input" | jq -r '.source // ""')"
-# Only on a fresh/resumed/cleared session — not on every compaction mid-work.
 case "$src" in startup | resume | clear) ;; *) exit 0 ;; esac
 
 command -v docker >/dev/null 2>&1 && exit 0

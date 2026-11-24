@@ -48,7 +48,7 @@ Every app repo hand-rolled its own CI. Lint/test steps drifted between repos, se
 
 5. **Enforcement is admission at the deploy boundary.** Kyverno verifies the signature and refuses any image that lacks a valid one. "Checks passed" is no longer a property of a CI log you have to trust — it's a cryptographic fact the cluster checks for itself.
 
-6. **The repo declares its map; the gate verifies it.** Principle 3 stops a repo *weakening* the rules; this stops a repo *escaping their scope*. A green gate must mean every line was checked, not just the code at the root. So every gated repo ships a required `gate-config.json` honestly mapping its projects, and the harness independently walks the tree and **fails closed** on any undeclared code (a `.py` no project covers) or unsupported language (one the gate has no adapter for). The walk is hostile by construction — it scopes to the clean-checkout content (the git index), so a `.gitignore` can't hide a *tracked* file (a `git add -f`'d file is still seen); it doesn't follow symlinks; and it has no repo-controlled exclusions — because hiding code from the gate is exactly the evasion it closes. See [ADR-029](docs/decisions/029-gate-config-honest-map.md) and [ADR-036](docs/decisions/036-honest-map-git-listing.md).
+6. **The repo declares its map; the gate verifies it.** Principle 3 stops a repo *weakening* the rules; this stops a repo *escaping their scope*. A green gate must mean every line was checked, not just the code at the root. So every gated repo ships a required `gate-config.json` honestly mapping its projects, and the harness independently walks the tree and **fails closed** on any undeclared code (a `.py` no project covers) or unsupported language (one the gate has no adapter for). The walk is hostile by construction — it scopes to the clean-checkout content (the git index), so a `.gitignore` can't hide a *tracked* file (a `git add -f`'d file is still seen); it doesn't follow symlinks; and it has no repo-controlled exclusions — because hiding code from the gate is exactly the evasion it closes.
 
 ## What's in this repo
 
@@ -119,7 +119,7 @@ You don't need the signing key, a registry, or an admission controller to get mo
 docker run --rm -v "$PWD:/src" -v grizzly-gate-cache:/cache -w /src bearflinn/grizzly-gate:latest --source /src
 ```
 
-It leaves your working tree as it found it: build output and package caches go to the `grizzly-gate-cache` volume, per-project state to a scratch dir inside the container, and the few things that must be written into the repo are undone before the run returns ([ADR-042](docs/decisions/042-leave-the-scanned-tree-clean.md)). The one artifact left behind is `grizzly-gate-report/report.json`.
+It leaves your working tree as it found it: build output and package caches go to the `grizzly-gate-cache` volume, per-project state to a scratch dir inside the container, and the few things that must be written into the repo are undone before the run returns. The one artifact left behind is `grizzly-gate-report/report.json`.
 
 A standalone run does everything CI does **except** cosign signing and image-layer (CVE/SBOM) scanning — those need a built image and signing material. The honest-map check and every per-language + SAST/secret/dependency check run identically, because it's the same image. The dev-distribution image at `bearflinn/grizzly-gate:latest` is published for exactly this (it signs nothing) and is multi-arch (`linux/amd64` + `linux/arm64`), so it runs natively on Apple Silicon and Intel Macs. See [Using the gate](docs/using-the-gate.md) for local setup, the pre-commit wiring, the full `gate-config.json` reference, the violation→fix table, and the machine-readable failure report.
 
@@ -137,7 +137,7 @@ If you work in these repos with an agent, the [`grizzly-gate` Claude Code plugin
 The rules are data, and the data lives in this repo — so a different environment with a different bar **forks the gate** rather than fighting it. Everything that decides what "pass" means is editable here, then baked into your own image tag:
 
 - **Tune a check.** Each adapter is a `config/languages/<lang>/manifest.toml` (the commands) sitting next to the tool's own native config (`clippy.toml`, `ruff.toml`, `deny.toml`, the Semgrep ruleset, …). Loosen or tighten a lint, raise or lower a scanner's severity floor, swap a ruleset — the change lives in one place instead of N pipelines.
-- **Add or drop a language.** Adding one is a deliberate two-part change: a new adapter under `languages/` *and* its detection rules (the `[detect]` block + removing the language from the `detect.toml` unsupported denylist). Dropping one is the reverse. See [ADR-029](docs/decisions/029-gate-config-honest-map.md).
+- **Add or drop a language.** Adding one is a deliberate two-part change: a new adapter under `languages/` *and* its detection rules (the `[detect]` block + removing the language from the `detect.toml` unsupported denylist). Dropping one is the reverse.
 - **Pin your own tool versions.** Every scanner and adapter version is a single `ARG` in the `Dockerfile` — the one source of truth. Bump deliberately; never float a tag.
 - **Build and run your own image.** `docker build -t <your-registry>/grizzly-gate:<tag> .`, push it, and point your CI (and `GRIZZLY_GATE_IMAGE` for local runs) at it. Nothing in the harness hard-codes the platform — it takes `--source`, `--image`, and a cosign key reference, so the same binary serves any CI + registry + admission stack.
 
@@ -145,7 +145,7 @@ The one thing you *can't* push down into the scanned repo is the bar itself — 
 
 ## Trust model
 
-- **Key-based cosign**, private key in a secret store (the platform uses OpenBao), delivered to CI runners by External Secrets. The public key is embedded in the Kyverno policy. (Keyless/Sigstore was considered and deferred — see [ADR-028](docs/decisions/028-centralized-ci-gate.md).)
+- **Key-based cosign**, private key in a secret store (the platform uses OpenBao), delivered to CI runners by External Secrets. The public key is embedded in the Kyverno policy.
 - Enforcement is **scoped** to namespaces labelled `grizzly.io/gated=true`, so third-party/upstream images that the gate can't sign are unaffected.
 - Rollout is staged: the policy ships in **Audit** (report-only) and flips to **Enforce** once live images are signed.
 
@@ -164,17 +164,8 @@ The gate is the pattern; these are the platform's concrete choices for running i
 
 None of these are required to adopt the *pattern* — the six principles port to any CI + registry + admission-controller stack. To *operate* the platform instance (bootstrap, Audit→Enforce rollout, key rotation, gate version bump), see the [platform runbook](https://github.com/Grizzly-Endeavors/grizzly-platform/blob/master/docs/runbooks/ci-gate.md).
 
-## Deliberately deferred (v1)
-
-- **DAST / live probe** of the running container — the harness is structured for it, but it's not wired yet.
-- **SBOM attestation** — v1 signs; it doesn't yet attach/verify an SBOM attestation.
-- **Platform policy rules at admission** (required probes, resource requests, naming/ingress conventions) — scaffolded but disabled.
-- **Registry auth** — the platform's zot is anonymous/in-cluster for now.
-
 ## Further reading
 
 - [Using the gate](docs/using-the-gate.md) — the consumer guide: authoring `gate-config.json`, fixing each violation class, the queryable failure report, and running the gate locally / in pre-commit.
-- [Coverage & threat model](docs/coverage.md) — exactly what failure modes and vulnerability classes the gate prevents, per tool, plus the gaps it doesn't.
-- [Coverage matrix](docs/coverage-matrix.md) — the same coverage as an at-a-glance grid: skim a threat class (SQL injection, strict typing, vulnerable deps) against each supported language.
-- [Claude Code plugin](plugin/README.md) — the full component and configuration list for running the gate from inside an agent: skills, the `gate-fixer` subagent, the MCP server, and the opt-in guardrail hooks.
-- ADRs — the *why*: [028 centralized gate](docs/decisions/028-centralized-ci-gate.md), [029 honest map](docs/decisions/029-gate-config-honest-map.md), [030 cross-ecosystem SCA](docs/decisions/030-cross-ecosystem-sca.md).
+- [Coverage matrix](docs/coverage-matrix.md) — at-a-glance threat class coverage against each supported language.
+- [Claude Code plugin](plugin/README.md) — skills, `gate-fixer` subagent, MCP server, and opt-in guardrail hooks.

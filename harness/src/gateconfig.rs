@@ -1,12 +1,3 @@
-//! The per-repo `gate-config.json` — the honest map a scanned repo must ship.
-//!
-//! This file is the repo's *declaration* of its own project layout: which
-//! languages live where. It can only ever declare (it cannot relax a single
-//! check — the gate forces its own tool config regardless). Its honesty is
-//! verified independently by [`crate::detect`], which walks the tree and fails
-//! closed if reality contains a language/project the declaration omits. A
-//! missing or malformed declaration is itself a fail-closed condition.
-
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Result};
@@ -15,16 +6,10 @@ use serde::Deserialize;
 use crate::config::Tree;
 use crate::report::{HonestMapFailure, Violation, ViolationClass};
 
-/// Required filename at the repo root.
 pub const FILE: &str = "gate-config.json";
 
-/// Schema version this harness understands. Bumped only on a breaking change to
-/// the declaration shape; an unknown version fails closed rather than guessing.
 pub const SUPPORTED_VERSION: u32 = 1;
 
-/// Raw, deserialized `gate-config.json`. `deny_unknown_fields` so a typo'd or
-/// speculative key (e.g. a hoped-for `exclude`) is a hard error, never a
-/// silently-ignored escape hatch.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Raw {
@@ -37,34 +22,18 @@ struct Raw {
 struct RawProject {
     language: String,
     path: String,
-    /// node-only: the repo's own tsconfig, used for module/path *resolution*
-    /// while the gate force-overrides strictness. Rejected for any other
-    /// language.
     #[serde(default)]
     tsconfig: Option<String>,
 }
 
-/// A validated, resolved project: language is a known adapter, the path is
-/// in-tree and carries the adapter's marker, and any tsconfig exists.
 #[derive(Debug)]
 pub struct ResolvedProject {
     pub language: String,
-    /// Normalized path relative to the source root (`""` for the root itself).
     pub rel_path: PathBuf,
-    /// Absolute path to the project directory.
     pub abs_path: PathBuf,
-    /// Absolute path to the repo tsconfig (node + `tsconfig` set only).
     pub tsconfig: Option<PathBuf>,
 }
 
-/// Load, parse, and fully validate the declaration against `tree` and the
-/// on-disk `source`. Every failure here is fatal by design (fail closed).
-///
-/// Whole-file problems (missing file, parse/version error, zero projects) fail
-/// immediately — they can't be aggregated with per-project errors. Per-project
-/// resolution, by contrast, accumulates: *every* malformed project is reported
-/// in one [`HonestMapFailure`] so an author fixes them in a single pass instead
-/// of one gate run at a time.
 pub fn load(source: &Path, tree: &Tree) -> Result<Vec<ResolvedProject>, HonestMapFailure> {
     let path = source.join(FILE);
     let text = std::fs::read_to_string(&path).map_err(|e| {
@@ -90,8 +59,6 @@ pub fn load(source: &Path, tree: &Tree) -> Result<Vec<ResolvedProject>, HonestMa
         )));
     }
 
-    // Accumulate: collect every resolved project and every per-project failure,
-    // rather than aborting on the first bad one.
     let mut resolved = Vec::with_capacity(raw.projects.len());
     let mut violations: Vec<Violation> = Vec::new();
     for (i, p) in raw.projects.into_iter().enumerate() {
@@ -114,8 +81,6 @@ pub fn load(source: &Path, tree: &Tree) -> Result<Vec<ResolvedProject>, HonestMa
     Ok(resolved)
 }
 
-/// Resolve one declared project, returning a structured [`Violation`] (rather
-/// than aborting) on any problem so the caller can collect them all.
 fn resolve(
     idx: usize,
     p: RawProject,
@@ -126,8 +91,6 @@ fn resolve(
         "{FILE} projects[{idx}] (language={:?}, path={:?})",
         p.language, p.path
     );
-    // Every failure in this project is a malformed-declaration violation; this
-    // closure stamps the structured fields and keeps the rich human `reason`.
     let lang = p.language.clone();
     let decl_path = p.path.clone();
     let v = |reason: String| Violation {
@@ -137,8 +100,6 @@ fn resolve(
         reason,
     };
 
-    // Language must be a known adapter. Unknown names (including the denylisted
-    // unsupported languages) cannot be declared — they have no checks to run.
     let adapter = tree
         .adapters
         .iter()
@@ -153,8 +114,6 @@ fn resolve(
     let rel = normalize_rel(&p.path).map_err(|e| v(format!("{where_}: invalid path: {e}")))?;
     let abs = source.join(&rel);
 
-    // The resolved directory must actually be inside the source tree (defends
-    // against symlink/`.` escapes that `normalize_rel` can't see) and be a dir.
     let abs = abs
         .canonicalize()
         .map_err(|e| v(format!("{where_}: path does not resolve on disk: {e}")))?;
@@ -168,8 +127,6 @@ fn resolve(
         return Err(v(format!("{where_}: path is not a directory")));
     }
 
-    // The adapter's marker must be present — a declared project the gate can't
-    // actually run is a lie of omission (e.g. "rust at ./svc" with no Cargo.toml).
     let marker = abs.join(&adapter.marker);
     if !marker.exists() {
         return Err(v(format!(
@@ -180,7 +137,6 @@ fn resolve(
         )));
     }
 
-    // tsconfig is node-only and, when given, must exist inside the project.
     let tsconfig = match p.tsconfig {
         None => None,
         Some(_) if p.language != "node" => {
@@ -213,10 +169,6 @@ fn resolve(
     })
 }
 
-/// Normalize a declared relative path: reject absolute paths and any `..` or
-/// root component, collapse `.`. Returns `""` for the repo root. This is the
-/// first line against path-escape evasions (canonicalization in `resolve` is
-/// the second).
 fn normalize_rel(raw: &str) -> Result<PathBuf> {
     let p = Path::new(raw);
     let mut out = PathBuf::new();
@@ -249,7 +201,6 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> PathBuf {
-        // nosemgrep: temp-dir
         std::env::temp_dir().join(format!("gate-gateconfig-{tag}-{}", std::process::id()))
     }
 
@@ -276,7 +227,6 @@ mod tests {
     #[test]
     fn reports_every_bad_project_in_one_pass() {
         let root = scratch("multi-bad");
-        // svc/ exists (so the path resolves) but has no Cargo.toml marker.
         std::fs::create_dir_all(root.join("svc")).unwrap();
         std::fs::write(
             root.join(FILE),
@@ -288,7 +238,6 @@ mod tests {
         .unwrap();
 
         let failure = load(&root, &tree()).unwrap_err();
-        // Both problems surface together — no first-failure churn.
         assert_eq!(failure.violations.len(), 2, "{}", failure.message);
         assert!(failure.message.contains("cobol"), "{}", failure.message);
         assert!(

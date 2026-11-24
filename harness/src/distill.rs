@@ -1,15 +1,3 @@
-//! Output distillation: turn a tool's raw stdout/stderr into focused findings
-//! and/or cleaned text for surfacing — **presentation-only**.
-//!
-//! The gate verdict is the process exit code (see [`crate::main`]); nothing here
-//! changes it. Distillation fails closed: a structured parser that cannot read
-//! its tool's output yields **zero findings plus a visible marker over the raw
-//! text**, never a silent "clean" result that could mask a real failure.
-//!
-//! Two paths, selected by [`OutputSpec`]:
-//! - `parser = "<id>"` → parse the tool's JSON (on stdout) into [`Finding`]s.
-//! - otherwise → text path: drop noise lines (regex) and optionally strip ANSI.
-
 use regex_lite::Regex;
 use serde_json::Value;
 
@@ -28,11 +16,7 @@ pub fn apply(spec: &OutputSpec, stdout: &str, stderr: &str) -> (Vec<Finding>, St
     let combined = format!("{stdout}{stderr}");
     if let Some(parser) = spec.parser.as_deref() {
         return match parse(parser, stdout, stderr) {
-            // On success the structured `findings` ARE the surface; the text
-            // rendering is produced at display time (see `display_text`), so it
-            // is not frozen into `report.json`. Distilled text stays empty here.
             Ok(findings) => (findings, String::new()),
-            // Fail closed to raw: surface a loud marker, keep the verdict honest.
             Err(reason) => {
                 let raw = clean_text(spec, &combined);
                 let marker = format!(
@@ -69,10 +53,6 @@ pub fn relativize(findings: &mut [Finding], base: &str) {
     }
 }
 
-/// The text surface for a check, rendered at display time (terminal `FAILURES`
-/// block, MCP text fallback). Structured findings render to a YAML-style block;
-/// a text-path/fallback check shows its already-distilled text. Keeping this out
-/// of `report.json` means the human format is never frozen into the artifact.
 pub fn display_text(findings: &[Finding], distilled: &str) -> String {
     if findings.is_empty() {
         distilled.to_string()
@@ -81,13 +61,6 @@ pub fn display_text(findings: &[Finding], distilled: &str) -> String {
     }
 }
 
-/// Dispatch to a per-tool structured parser. `Err` carries a short reason used in
-/// the fallback marker; an unknown id is a manifest bug, surfaced the same way.
-///
-/// Two output shapes: cargo/rustc emit newline-delimited JSON (one record per
-/// line, on either stream — clippy stdout, cargo-deny stderr — so those scan the
-/// combined text), while the scanners emit a single pretty-printed JSON document
-/// on stdout, parsed whole.
 fn parse(parser: &str, stdout: &str, stderr: &str) -> Result<Vec<Finding>, String> {
     let combined = || format!("{stdout}{stderr}");
     match parser {
@@ -106,9 +79,6 @@ fn parse(parser: &str, stdout: &str, stderr: &str) -> Result<Vec<Finding>, Strin
     }
 }
 
-/// Text path: drop lines matching any `drop` regex, and optionally strip ANSI.
-/// Invalid `drop` regexes are skipped (a manifest bug must not crash a run) —
-/// they simply filter nothing.
 fn clean_text(spec: &OutputSpec, combined: &str) -> String {
     let stripped = if spec.strip_ansi {
         strip_ansi(combined)
@@ -137,9 +107,6 @@ fn clean_text(spec: &OutputSpec, combined: &str) -> String {
     out
 }
 
-/// Remove ANSI escape sequences (CSI/SGR and the like) from `s`. If the static
-/// pattern somehow fails to compile, the text passes through unstripped rather
-/// than panicking — distillation is presentation-only and must never abort a run.
 fn strip_ansi(s: &str) -> String {
     match static_ansi() {
         Some(re) => re.replace_all(s, "").into_owned(),
@@ -147,8 +114,6 @@ fn strip_ansi(s: &str) -> String {
     }
 }
 
-/// Compile the ANSI regex once: `\x1b\[` introducer, optional parameter and
-/// intermediate bytes, then a final byte in the `@`–`~` range.
 fn static_ansi() -> Option<&'static Regex> {
     use std::sync::OnceLock;
     static RE: OnceLock<Option<Regex>> = OnceLock::new();
@@ -156,20 +121,12 @@ fn static_ansi() -> Option<&'static Regex> {
         .as_ref()
 }
 
-/// Render findings to a YAML-style block, one list item per finding, for the
-/// terminal `FAILURES` block and the MCP text fallback. `loc` (combined
-/// `file:line:col`) and `rule` are omitted when absent (e.g. cargo-deny
-/// advisories carry no source location). This is a human-readable surface, not
-/// strict YAML — agents consume the structured `findings` JSON instead.
 pub fn render(findings: &[Finding]) -> String {
     if findings.is_empty() {
         return String::new();
     }
     let mut blocks: Vec<String> = Vec::with_capacity(findings.len());
     for f in findings {
-        // Build only the fields the tool actually provided, in a stable order —
-        // a missing severity/loc/rule is omitted (not defaulted), matching the
-        // structured `findings` JSON. `message` is always present.
         let mut fields: Vec<(&str, String)> = Vec::new();
         if let Some(sev) = f.severity.as_deref() {
             fields.push(("severity", sev.to_string()));
@@ -185,12 +142,10 @@ pub fn render(findings: &[Finding]) -> String {
         if let Some(rule) = f.rule.as_deref() {
             fields.push(("rule", rule.to_string()));
         }
-        // First line of the message only; the full text stays in raw `output`.
         fields.push((
             "message",
             f.message.lines().next().unwrap_or("").to_string(),
         ));
-        // YAML-style list item: `- ` on the first field, `  ` on the rest.
         let lines: Vec<String> = fields
             .iter()
             .enumerate()
@@ -203,17 +158,10 @@ pub fn render(findings: &[Finding]) -> String {
     out
 }
 
-// --- Per-tool parsers -------------------------------------------------------
-
-/// Clippy / rustc via `cargo ... --message-format=json`: newline-delimited cargo
-/// messages. Keep `reason == "compiler-message"` whose level is a real
-/// diagnostic (error/warning), mapping the primary span to `file:line:col`.
 fn parse_clippy(combined: &str) -> Result<Vec<Finding>, String> {
     let mut findings = Vec::new();
     let mut saw_message = false;
     for line in combined.lines().filter(|l| !l.trim().is_empty()) {
-        // cargo interleaves non-JSON lines only on error; tolerate them but
-        // require at least one parseable compiler-message overall (below).
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
@@ -260,9 +208,6 @@ fn parse_clippy(combined: &str) -> Result<Vec<Finding>, String> {
             ),
             None => (None, None, None),
         };
-        // Skip rustc's trailing summaries ("aborting due to N previous errors",
-        // "N warnings emitted"): they carry neither a lint code nor a source
-        // span. Every genuine diagnostic has at least one of the two.
         if rule.is_none() && file.is_none() {
             continue;
         }
@@ -281,8 +226,6 @@ fn parse_clippy(combined: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// Map a rustc/clippy `level` onto the normalized severity set, or `None` for
-/// non-diagnostic levels we don't surface as findings.
 fn normalize_rustc_level(level: &str) -> Option<&'static str> {
     match level {
         "error" | "error: internal compiler error" => Some("error"),
@@ -291,8 +234,6 @@ fn normalize_rustc_level(level: &str) -> Option<&'static str> {
     }
 }
 
-/// cargo-deny via `--format json`: newline-delimited diagnostics. Each line is a
-/// `{ "type": "diagnostic", "fields": { severity, code, message, … } }` record.
 fn parse_cargo_deny(combined: &str) -> Result<Vec<Finding>, String> {
     let mut findings = Vec::new();
     let mut saw_diag = false;
@@ -336,8 +277,6 @@ fn parse_cargo_deny(combined: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// cargo-deny severities (`error`/`warning`/`note`/`help`) onto the normalized
-/// set; unknown values pass through as `note`.
 fn normalize_deny_severity(s: &str) -> &'static str {
     match s {
         "error" => "error",
@@ -346,17 +285,11 @@ fn normalize_deny_severity(s: &str) -> &'static str {
     }
 }
 
-/// Heuristic: does this output look like NDJSON (starts with `{`)? Used to keep
-/// the fail-closed marker from firing on genuinely-empty/clean output while
-/// still flagging a tool that emitted plain text instead of the JSON we asked
-/// for.
 fn looks_like_json_lines(s: &str) -> bool {
     s.lines()
         .find(|l| !l.trim().is_empty())
         .is_some_and(|l| l.trim_start().starts_with('{'))
 }
-
-// --- Single-document scanner parsers ----------------------------------------
 
 /// Parse the first JSON document from a tool's stdout, ignoring any trailing
 /// text — golangci-lint appends a human summary after its JSON. Empty stdout is
@@ -374,23 +307,16 @@ fn parse_doc(stdout: &str, tool: &str) -> Result<Value, String> {
     }
 }
 
-/// Borrow `v[key]` as a slice of values, or an empty slice when absent/not an
-/// array — lets the parsers walk nested arrays without cloning or unwrapping.
 fn arr<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key).and_then(Value::as_array).map_or(&[][..], |a| a)
 }
 
-/// Read a `u64` JSON field down to `u32` (line/column numbers), `None` on absence
-/// or overflow.
 fn u32_field(v: &Value, key: &str) -> Option<u32> {
     v.get(key)
         .and_then(Value::as_u64)
         .and_then(|n| u32::try_from(n).ok())
 }
 
-/// semgrep `--json`: `results[]` with `path`, `start.{line,col}`, `check_id`, and
-/// `extra.{severity,message}`. The gate points `--config` at a directory, so
-/// `check_id` is prefixed with the gate's config path — trim it to the rule tail.
 fn parse_semgrep(stdout: &str) -> Result<Vec<Finding>, String> {
     let doc = parse_doc(stdout, "semgrep")?;
     let mut findings = Vec::new();
@@ -419,7 +345,6 @@ fn parse_semgrep(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// semgrep `ERROR`/`WARNING`/`INFO` onto the normalized severity set.
 fn normalize_semgrep_severity(s: &str) -> &'static str {
     match s {
         "ERROR" => "error",
@@ -428,8 +353,6 @@ fn normalize_semgrep_severity(s: &str) -> &'static str {
     }
 }
 
-/// Drop the gate's vendored-rules config-path prefix from a semgrep `check_id`,
-/// keeping the meaningful rule path (everything after the last `.rules.`).
 fn shorten_semgrep_rule(id: &str) -> String {
     id.rsplit_once(".rules.")
         .map_or_else(|| id.to_string(), |(_, tail)| tail.to_string())
@@ -475,8 +398,6 @@ fn parse_trivy(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// trivy CRITICAL/HIGH/MEDIUM/LOW/UNKNOWN onto the normalized set. The gate fails
-/// on any vuln (exit code), so this only orders findings for the reader.
 fn normalize_trivy_severity(s: &str) -> &'static str {
     match s {
         "CRITICAL" | "HIGH" => "error",
@@ -529,9 +450,6 @@ fn parse_osv(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// gitleaks `--report-format json`: a top-level array of secret findings, each
-/// with `File`/`StartLine`/`StartColumn`, `RuleID`, and `Description`. Secrets
-/// have no severity (any leak is blocking); the value is `--redact`ed upstream.
 fn parse_gitleaks(stdout: &str) -> Result<Vec<Finding>, String> {
     let doc = parse_doc(stdout, "gitleaks")?;
     let items = doc.as_array().map_or(&[][..], |a| a);
@@ -553,9 +471,6 @@ fn parse_gitleaks(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// eslint `-f json`: a top-level array of file entries, each with `messages[]`
-/// carrying `ruleId`, integer `severity` (1=warn, 2=error), `message`, `line`,
-/// `column`. `ruleId` is null for parse/syntax errors — then the rule is omitted.
 fn parse_eslint(stdout: &str) -> Result<Vec<Finding>, String> {
     let doc = parse_doc(stdout, "eslint")?;
     let files = doc.as_array().map_or(&[][..], |a| a);
@@ -583,7 +498,6 @@ fn parse_eslint(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// eslint integer severity (1=warning, 2=error) onto the normalized set.
 fn normalize_eslint_severity(s: u64) -> &'static str {
     match s {
         2 => "error",
@@ -592,8 +506,6 @@ fn normalize_eslint_severity(s: u64) -> &'static str {
     }
 }
 
-/// ruff `--output-format json`: a top-level array of `{code, message, filename,
-/// location:{row,column}, severity}`. One finding per diagnostic.
 fn parse_ruff(stdout: &str) -> Result<Vec<Finding>, String> {
     let doc = parse_doc(stdout, "ruff")?;
     let items = doc.as_array().map_or(&[][..], |a| a);
@@ -622,8 +534,6 @@ fn parse_ruff(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// mypy `--output json`: newline-delimited objects on stdout, each `{file, line,
-/// column, severity, message, code}`. A clean run emits nothing (no fallback).
 fn parse_mypy(stdout: &str) -> Result<Vec<Finding>, String> {
     let mut findings = Vec::new();
     let mut saw = false;
@@ -631,7 +541,6 @@ fn parse_mypy(stdout: &str) -> Result<Vec<Finding>, String> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        // A mypy diagnostic always carries a message + severity; skip anything else.
         let (Some(message), Some(severity)) = (
             v.get("message").and_then(Value::as_str),
             v.get("severity").and_then(Value::as_str),
@@ -699,8 +608,6 @@ fn parse_ansible_lint(stdout: &str) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
-/// codeclimate severity (`info`/`minor`/`major`/`critical`/`blocker`) onto the
-/// normalized set.
 fn normalize_codeclimate_severity(s: &str) -> &'static str {
     match s {
         "blocker" | "critical" | "major" => "error",
@@ -709,8 +616,6 @@ fn normalize_codeclimate_severity(s: &str) -> &'static str {
     }
 }
 
-/// Normalize a lowercase word severity (`error`/`warning`/`note`) shared by ruff,
-/// mypy, and golangci-lint; anything else becomes `note`.
 fn normalize_word_severity(s: &str) -> &'static str {
     match s {
         "error" => "error",
@@ -829,7 +734,6 @@ mod tests {
 
     #[test]
     fn clippy_clean_run_yields_no_findings() {
-        // Only artifact/build messages, no diagnostics — a green clippy run.
         let stdout = "{\"reason\":\"compiler-artifact\"}\n{\"reason\":\"build-finished\",\"success\":true}\n";
         let (findings, _text) = apply(&spec("clippy"), stdout, "");
         assert!(findings.is_empty());
@@ -855,20 +759,13 @@ mod tests {
 
     #[test]
     fn clippy_drops_trailing_summary_message() {
-        // rustc's "aborting due to N previous errors" summary has level error but
-        // neither a code nor a span — it must not become a finding.
         let summary = r#"{"reason":"compiler-message","message":{"level":"error","message":"aborting due to 1 previous error","code":null,"spans":[]}}"#;
         let (findings, _t) = apply(&spec("clippy"), &format!("{summary}\n"), "");
         assert!(findings.is_empty(), "summary message must be dropped");
     }
 
-    // --- Real captured tool output (fixtures) -------------------------------
-
-    /// Real `cargo clippy --message-format=json` stdout (an unwrap on a None).
     const CLIPPY_FIXTURE: &str = include_str!("distill/fixtures/clippy.jsonl");
-    /// Real `cargo deny --format json check` stderr (a banned crate + summary).
     const CARGO_DENY_FIXTURE: &str = include_str!("distill/fixtures/cargo-deny.jsonl");
-    /// Real scanner JSON captured from the gate image against a bad-sample repo.
     const SEMGREP_FIXTURE: &str = include_str!("distill/fixtures/semgrep.json");
     const TRIVY_FIXTURE: &str = include_str!("distill/fixtures/trivy.json");
     const OSV_FIXTURE: &str = include_str!("distill/fixtures/osv-scanner.json");
@@ -892,8 +789,6 @@ mod tests {
 
     #[test]
     fn golangci_fixture_parses_ignoring_trailing_summary() {
-        // The fixture has golangci's human summary appended after the JSON; the
-        // parser must read the first JSON value and ignore the trailing text.
         let (findings, _d) = apply(&spec("golangci-lint"), GOLANGCI_FIXTURE, "");
         assert_eq!(findings.len(), 1, "trailing summary ignored: {findings:?}");
         let f = findings.first().unwrap();
@@ -989,7 +884,6 @@ mod tests {
         let f = findings.first().unwrap();
         assert!(f.file.is_some() && f.line.is_some(), "located: {f:?}");
         assert_eq!(f.rule.as_deref(), Some("no-var"));
-        // eslint severity 2 -> error.
         assert_eq!(f.severity.as_deref(), Some("error"));
     }
 
@@ -999,7 +893,6 @@ mod tests {
         assert!(!findings.is_empty(), "semgrep results yield findings");
         let f = findings.first().unwrap();
         assert!(f.file.is_some() && f.line.is_some(), "located: {f:?}");
-        // The gate's config-path prefix is stripped from the rule id.
         assert!(
             f.rule
                 .as_deref()
@@ -1069,7 +962,6 @@ mod tests {
 
     #[test]
     fn scanner_empty_stdout_fails_closed() {
-        // A scanner that emits nothing on stdout (e.g. crashed) must not look clean.
         let (findings, distilled) = apply(&spec("trivy"), "", "panic: boom\n");
         assert!(findings.is_empty());
         assert!(
@@ -1117,19 +1009,11 @@ mod tests {
         assert!(render(&findings).contains("rule: banned"));
     }
 
-    /// Write `distill-samples.txt` at the harness root showing, per tool, the
-    /// EXACT bytes each surface emits from real captured tool output: the literal
-    /// terminal FAILURES text, and the verbatim agent payload (the JSON string an
-    /// MCP `get_check_output` call returns). Both go through the real code paths
-    /// (`distill::display_text`, `mcp::findings_payload`) so the review can't
-    /// drift from runtime. Ignored by default; run explicitly to regenerate:
-    ///   `cargo test -- generate_distill_samples --ignored --nocapture`
     #[test]
     #[ignore = "writes the review artifact on demand, not part of the normal suite"]
     fn generate_distill_samples() {
         use crate::report::Check;
 
-        // (label, cmd, parser, combined-stream fixture)
         let samples: &[(&str, &str, &str, &str)] = &[
             (
                 "rust:harness:clippy",
@@ -1203,8 +1087,6 @@ mod tests {
             .iter()
             .map(|(label, cmd, parser, fixture)| {
                 let (mut findings, distilled) = apply(&spec(parser), fixture, "");
-                // The bad-sample fixtures were captured under /src; match the
-                // runtime, which relativizes against the tool's working dir.
                 relativize(&mut findings, "/src");
                 let check = Check {
                     label: (*label).to_string(),
